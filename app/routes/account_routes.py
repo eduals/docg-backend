@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime, timedelta
 from sqlalchemy import text
+import json
 from app.database import db
 from app.models import Account
 from app.auth import require_auth
@@ -103,9 +104,18 @@ def create_account(portal_id):
 def update_clicksign_key(portal_id):
     """Salva/atualiza API key do Clicksign"""
     try:
-        # Usar force=True para forçar parse do JSON mesmo sem Content-Type header
-        # e silent=True para retornar None em vez de lançar exceção
+        # Tentar obter JSON do request
         data = request.get_json(force=True, silent=True)
+        
+        # Se não conseguir fazer parse, tentar manualmente
+        if not data or not isinstance(data, dict):
+            try:
+                # Tentar obter o body como string e fazer parse manual
+                body_str = request.get_data(as_text=True)
+                if body_str:
+                    data = json.loads(body_str)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                data = None
         
         # Verificar se data é um dicionário válido
         if not data or not isinstance(data, dict) or 'clicksign_api_key' not in data:
