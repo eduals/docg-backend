@@ -211,6 +211,7 @@ def callback():
             state = request.args.get('state')
             redirect_uri = request.args.get('redirect_uri')
             organization_id = request.args.get('organization_id')
+            scope_param = request.args.get('scope')  # Extrair scopes do callback
             
             # Extrair portal_id do state se estiver no formato "state:portal_id"
             if state and ':' in state:
@@ -225,6 +226,7 @@ def callback():
             state = data.get('state')
             redirect_uri = data.get('redirect_uri')
             organization_id = data.get('organization_id')
+            scope_param = data.get('scope')  # Extrair scopes do callback
             
             # Extrair portal_id do state se estiver no formato "state:portal_id"
             if state and ':' in state:
@@ -287,7 +289,18 @@ def callback():
             error_str = str(e)
             if 'scope' in error_str.lower() or 'Scope' in error_str:
                 logger.warning(f"Scope mismatch detected, recreating flow without fixed scopes: {error_str}")
-                # Recriar flow sem scopes fixos - aceitar qualquer scope retornado
+                
+                # Extrair scopes do callback se disponível, senão usar lista vazia
+                callback_scopes = []
+                if scope_param:
+                    # scope_param vem como string separada por espaços
+                    callback_scopes = scope_param.split()
+                elif 'scope' in error_str:
+                    # Tentar extrair scopes do erro se disponível
+                    # Usar lista vazia como fallback para aceitar qualquer scope
+                    callback_scopes = []
+                
+                # Recriar flow com os scopes do callback ou lista vazia
                 flow = Flow.from_client_config(
                     {
                         "web": {
@@ -298,6 +311,7 @@ def callback():
                             "redirect_uris": [redirect_uri]
                         }
                     },
+                    scopes=callback_scopes,  # Adicionar argumento scopes faltante
                     redirect_uri=redirect_uri
                 )
                 if code_verifier:
