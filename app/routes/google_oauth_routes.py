@@ -2,6 +2,8 @@ from flask import Blueprint, request, jsonify, redirect
 from app.database import db
 from app.models import GoogleOAuthToken, GoogleDriveConfig, Organization, User
 from app.auth import require_auth
+from app.utils.auth import require_org
+from flask import g
 from app.config import Config
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -35,6 +37,36 @@ SCOPES = [
 _pkce_store = {}
 _pkce_lock = threading.Lock()
 _PKCE_TTL = 600  # 10 minutos
+
+def _normalize_scopes(scopes):
+    """
+    Normaliza scopes do Google OAuth, convertendo formatos curtos para URLs completas.
+    
+    Args:
+        scopes: Lista de scopes (strings)
+        
+    Returns:
+        Lista de scopes normalizados
+    """
+    scope_mapping = {
+        'email': 'https://www.googleapis.com/auth/userinfo.email',
+        'profile': 'https://www.googleapis.com/auth/userinfo.profile',
+        'openid': 'openid'  # openid já é um scope válido
+    }
+    
+    normalized = []
+    for scope in scopes:
+        normalized.append(scope_mapping.get(scope, scope))
+    
+    # Remover duplicatas mantendo a ordem
+    seen = set()
+    result = []
+    for scope in normalized:
+        if scope not in seen:
+            seen.add(scope)
+            result.append(scope)
+    
+    return result
 
 def _generate_code_verifier():
     """Gera um code_verifier para PKCE (43-128 caracteres, URL-safe)"""
@@ -76,18 +108,13 @@ def _cleanup_expired_pkce():
         del _pkce_store[key]
 
 @bp.route('/status', methods=['GET'])
-@require_auth
+@require_org
 def get_oauth_status():
     """Verificar status de conexão"""
     try:
-        portal_id = request.args.get('portal_id')
+        organization_id = g.organization_id
         
-        if not portal_id:
-            return jsonify({
-                'error': 'portal_id is required'
-            }), 400
-        
-        token = GoogleOAuthToken.query.filter_by(portal_id=portal_id).first()
+        token = GoogleOAuthToken.query.filter_by(organization_id=organization_id).first()
         
         if not token:
             return jsonify({
@@ -127,16 +154,16 @@ def get_oauth_status():
 
 
 @bp.route('/authorize', methods=['GET'])
-@require_auth
+@require_org
 def authorize():
     """Iniciar fluxo OAuth com PKCE (Proof Key for Code Exchange)"""
     try:
-        portal_id = request.args.get('portal_id')
+        organization_id = g.organization_id
         redirect_uri = request.args.get('redirect_uri')
         
-        if not portal_id or not redirect_uri:
+        if not redirect_uri:
             return jsonify({
-                'error': 'portal_id and redirect_uri are required'
+                'error': 'redirect_uri is required'
             }), 400
         
         # Configurar OAuth flow
@@ -178,13 +205,13 @@ def authorize():
         # Armazenar code_verifier associado ao state
         _store_pkce_verifier(state, code_verifier)
         
-        # Incluir portal_id no state para recuperação no callback
-        state_with_portal = f"{state}:{portal_id}"
+        # Incluir organization_id no state para recuperação no callback
+        state_with_org = f"{state}:{organization_id}"
         
         return jsonify({
             'success': True,
             'authorization_url': authorization_url,
-            'state': state_with_portal
+            'state': state_with_org
         }), 200
         
     except Exception as e:
@@ -207,33 +234,31 @@ def callback():
         # Suportar tanto GET (query params) quanto POST (body)
         if request.method == 'GET':
             code = request.args.get('code')
-            portal_id = request.args.get('portal_id')
             state = request.args.get('state')
             redirect_uri = request.args.get('redirect_uri')
             organization_id = request.args.get('organization_id')
             scope_param = request.args.get('scope')  # Extrair scopes do callback
             
-            # Extrair portal_id do state se estiver no formato "state:portal_id"
+            # Extrair organization_id do state se estiver no formato "state:organization_id"
             if state and ':' in state:
                 state_parts = state.split(':', 1)
                 state = state_parts[0]
-                if not portal_id:
-                    portal_id = state_parts[1]
+                if not organization_id:
+                    organization_id = state_parts[1]
         else:
             data = request.get_json() or {}
             code = data.get('code')
-            portal_id = data.get('portal_id')
             state = data.get('state')
             redirect_uri = data.get('redirect_uri')
             organization_id = data.get('organization_id')
             scope_param = data.get('scope')  # Extrair scopes do callback
             
-            # Extrair portal_id do state se estiver no formato "state:portal_id"
+            # Extrair organization_id do state se estiver no formato "state:organization_id"
             if state and ':' in state:
                 state_parts = state.split(':', 1)
                 state = state_parts[0]
-                if not portal_id:
-                    portal_id = state_parts[1]
+                if not organization_id:
+                    organization_id = state_parts[1]
         
         if not code:
             return jsonify({
@@ -264,9 +289,9 @@ def callback():
         # Se scope_param estiver disponível, usar os scopes retornados pelo Google
         # Caso contrário, usar os scopes padrão
         if scope_param:
-            # Usar scopes retornados pelo Google
-            scopes_to_use = scope_param.split()
-            logger.info(f"Usando scopes do callback: {scopes_to_use}")
+            # Usar scopes retornados pelo Google e normalizar
+            scopes_to_use = _normalize_scopes(scope_param.split())
+            logger.info(f"Usando scopes normalizados do callback: {scopes_to_use}")
         else:
             # Usar scopes padrão
             scopes_to_use = SCOPES
@@ -371,10 +396,22 @@ def callback():
                 )
                 db.session.add(new_user)
         
-        # Salvar ou atualizar tokens no banco
-        # Se tem portal_id, usar ele; senão, usar organization_id como identificador
-        token_identifier = portal_id or organization_id
-        token = GoogleOAuthToken.query.filter_by(portal_id=token_identifier).first()
+        # Validar que organization_id existe
+        if not organization_id:
+            return jsonify({
+                'error': 'organization_id is required to save OAuth token'
+            }), 400
+        
+        # Garantir que organization_id seja UUID
+        try:
+            organization_id = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
+        except (ValueError, AttributeError):
+            return jsonify({
+                'error': 'Invalid organization_id format'
+            }), 400
+        
+        # Salvar ou atualizar tokens no banco usando organization_id
+        token = GoogleOAuthToken.query.filter_by(organization_id=organization_id).first()
         
         if token:
             token.access_token = credentials.to_json()
@@ -384,7 +421,7 @@ def callback():
             token.updated_at = datetime.utcnow()
         else:
             token = GoogleOAuthToken(
-                portal_id=token_identifier,
+                organization_id=organization_id,
                 access_token=credentials.to_json(),
                 refresh_token=credentials.refresh_token,
                 token_expiry=credentials.expiry,
@@ -521,26 +558,20 @@ def callback():
         }), 500
 
 @bp.route('/disconnect', methods=['POST'])
-@require_auth
+@require_org
 def disconnect():
     """Desconectar conta Google"""
     try:
-        data = request.get_json()
-        portal_id = data.get('portal_id')
+        organization_id = g.organization_id
         
-        if not portal_id:
-            return jsonify({
-                'error': 'portal_id is required'
-            }), 400
-        
-        token = GoogleOAuthToken.query.filter_by(portal_id=portal_id).first()
+        token = GoogleOAuthToken.query.filter_by(organization_id=organization_id).first()
         
         if token:
             db.session.delete(token)
             db.session.commit()
         
         # Também remover configuração do Google Drive se existir
-        config = GoogleDriveConfig.query.filter_by(portal_id=portal_id).first()
+        config = GoogleDriveConfig.query.filter_by(organization_id=organization_id).first()
         if config:
             db.session.delete(config)
             db.session.commit()

@@ -1,5 +1,6 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from app.auth import require_auth
+from app.utils.auth import require_org
 from app.routes.google_drive_routes import get_google_credentials, list_templates as list_gdrive_templates
 from googleapiclient.discovery import build
 import requests
@@ -8,15 +9,11 @@ bp = Blueprint('templates', __name__, url_prefix='/api/v1/templates')
 
 @bp.route('', methods=['GET'])
 @require_auth
+@require_org
 def list_all_templates():
     """Listar todos os templates disponíveis (ClickSign + Google Drive)"""
     try:
-        portal_id = request.args.get('portal_id')
-        
-        if not portal_id:
-            return jsonify({
-                'error': 'portal_id is required'
-            }), 400
+        organization_id = g.organization_id
         
         # Buscar templates do ClickSign
         clicksign_templates = []
@@ -31,13 +28,13 @@ def list_all_templates():
         # Buscar templates do Google Drive
         google_drive_templates = []
         try:
-            creds = get_google_credentials(portal_id)
+            creds = get_google_credentials(organization_id)
             if creds:
                 service = build('drive', 'v3', credentials=creds)
                 # Usar mesma lógica de list_templates
                 from app.models import GoogleDriveConfig
                 from app.database import db
-                config = GoogleDriveConfig.query.filter_by(portal_id=portal_id).first()
+                config = GoogleDriveConfig.query.filter_by(organization_id=organization_id).first()
                 folder_id = config.templates_folder_id if config else None
                 
                 query = "trashed=false and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.document')"

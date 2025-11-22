@@ -2,6 +2,8 @@ from flask import Blueprint, request, jsonify
 from app.database import db
 from app.models import GoogleOAuthToken, GoogleDriveConfig
 from app.auth import require_auth
+from app.utils.auth import require_org
+from flask import g
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -13,9 +15,9 @@ import base64
 
 bp = Blueprint('google_drive', __name__, url_prefix='/api/v1/google-drive')
 
-def get_google_credentials(portal_id):
-    """Obter credenciais Google para um portal"""
-    token = GoogleOAuthToken.query.filter_by(portal_id=portal_id).first()
+def get_google_credentials(organization_id):
+    """Obter credenciais Google para uma organização"""
+    token = GoogleOAuthToken.query.filter_by(organization_id=organization_id).first()
     
     if not token or token.is_expired():
         return None
@@ -39,18 +41,13 @@ def get_google_credentials(portal_id):
 
 
 @bp.route('/folders', methods=['GET'])
-@require_auth
+@require_org
 def list_folders():
     """Listar pastas do Google Drive"""
     try:
-        portal_id = request.args.get('portal_id')
+        organization_id = g.organization_id
         
-        if not portal_id:
-            return jsonify({
-                'error': 'portal_id is required'
-            }), 400
-        
-        creds = get_google_credentials(portal_id)
+        creds = get_google_credentials(organization_id)
         if not creds:
             return jsonify({
                 'error': 'Google account not connected or token expired'
@@ -85,28 +82,23 @@ def list_folders():
 
 
 @bp.route('/config', methods=['POST'])
-@require_auth
+@require_org
 def save_config():
     """Configurar pastas do Google Drive"""
     try:
+        organization_id = g.organization_id
         data = request.get_json()
-        portal_id = data.get('portal_id')
         templates_folder_id = data.get('templates_folder_id')
         library_folder_id = data.get('library_folder_id')
         
-        if not portal_id:
-            return jsonify({
-                'error': 'portal_id is required'
-            }), 400
-        
-        config = GoogleDriveConfig.query.filter_by(portal_id=portal_id).first()
+        config = GoogleDriveConfig.query.filter_by(organization_id=organization_id).first()
         
         if config:
             config.templates_folder_id = templates_folder_id
             config.library_folder_id = library_folder_id
         else:
             config = GoogleDriveConfig(
-                portal_id=portal_id,
+                organization_id=organization_id,
                 templates_folder_id=templates_folder_id,
                 library_folder_id=library_folder_id
             )
@@ -128,18 +120,13 @@ def save_config():
 
 
 @bp.route('/config', methods=['GET'])
-@require_auth
+@require_org
 def get_config():
     """Obter configuração de pastas"""
     try:
-        portal_id = request.args.get('portal_id')
+        organization_id = g.organization_id
         
-        if not portal_id:
-            return jsonify({
-                'error': 'portal_id is required'
-            }), 400
-        
-        config = GoogleDriveConfig.query.filter_by(portal_id=portal_id).first()
+        config = GoogleDriveConfig.query.filter_by(organization_id=organization_id).first()
         
         if not config:
             return jsonify({
@@ -160,19 +147,14 @@ def get_config():
 
 
 @bp.route('/templates', methods=['GET'])
-@require_auth
+@require_org
 def list_templates():
     """Listar templates do Google Drive"""
     try:
-        portal_id = request.args.get('portal_id')
+        organization_id = g.organization_id
         folder_id = request.args.get('folder_id')
         
-        if not portal_id:
-            return jsonify({
-                'error': 'portal_id is required'
-            }), 400
-        
-        creds = get_google_credentials(portal_id)
+        creds = get_google_credentials(organization_id)
         if not creds:
             return jsonify({
                 'error': 'Google account not connected or token expired'
@@ -182,7 +164,7 @@ def list_templates():
         
         # Se folder_id não fornecido, usar da configuração
         if not folder_id:
-            config = GoogleDriveConfig.query.filter_by(portal_id=portal_id).first()
+            config = GoogleDriveConfig.query.filter_by(organization_id=organization_id).first()
             if config and config.templates_folder_id:
                 folder_id = config.templates_folder_id
         
@@ -217,22 +199,22 @@ def list_templates():
 
 
 @bp.route('/upload', methods=['POST'])
-@require_auth
+@require_org
 def upload_file():
     """Upload de arquivo para Google Drive"""
     try:
+        organization_id = g.organization_id
         data = request.get_json()
-        portal_id = data.get('portal_id')
         file_content = data.get('file')  # base64
         folder_id = data.get('folder_id')
         filename = data.get('filename')
         
-        if not portal_id or not file_content or not filename:
+        if not file_content or not filename:
             return jsonify({
-                'error': 'portal_id, file, and filename are required'
+                'error': 'file and filename are required'
             }), 400
         
-        creds = get_google_credentials(portal_id)
+        creds = get_google_credentials(organization_id)
         if not creds:
             return jsonify({
                 'error': 'Google account not connected or token expired'

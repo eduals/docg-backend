@@ -122,12 +122,12 @@ class RiscService:
         
         for user in users:
             # Invalidar tokens OAuth associados
-            # Usar organization_id ou portal_id como identificador
-            tokens = GoogleOAuthToken.query.filter_by(
-                portal_id=str(user.organization_id)
-            ).all()
+            # Usar organization_id como identificador
+            token = GoogleOAuthToken.query.filter_by(
+                organization_id=user.organization_id
+            ).first()
             
-            for token in tokens:
+            if token:
                 # Marcar token como inválido (deletar ou marcar flag)
                 db.session.delete(token)
                 logger.info(f"Token OAuth invalidado para organização {user.organization_id}")

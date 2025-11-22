@@ -73,9 +73,9 @@ def create_template():
     # Extrair tags do template
     detected_tags = []
     try:
-        portal_id = request.args.get('portal_id') or data.get('portal_id')
-        if portal_id:
-            google_creds = get_google_credentials(portal_id)
+        organization_id = g.organization_id
+        if organization_id:
+            google_creds = get_google_credentials(organization_id)
             if google_creds:
                 docs_service = GoogleDocsService(google_creds)
                 detected_tags = docs_service.extract_tags_from_document(data['google_file_id'])
@@ -116,11 +116,9 @@ def sync_template_tags(template_id):
     ).first_or_404()
     
     try:
-        portal_id = request.args.get('portal_id')
-        if not portal_id:
-            return jsonify({'error': 'portal_id necessário'}), 400
+        organization_id = g.organization_id
         
-        google_creds = get_google_credentials(portal_id)
+        google_creds = get_google_credentials(organization_id)
         if not google_creds:
             return jsonify({'error': 'Credenciais do Google não configuradas'}), 400
         

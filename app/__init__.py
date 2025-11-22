@@ -41,10 +41,12 @@ def create_app(config_class=Config):
     from app.routes import features
     app.register_blueprint(features.features_bp)
     
-    # Registrar rotas legadas (compatibilidade)
-    from app.routes import account_routes
-    app.register_blueprint(account_routes.bp)
+    # Health check endpoint
+    from app.routes import health
+    app.register_blueprint(health.bp)
     
+    # Registrar rotas legadas (compatibilidade)
+    # account_routes removido - migrado para organizations
     from app.routes import field_mappings_routes
     app.register_blueprint(field_mappings_routes.bp)
     

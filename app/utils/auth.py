@@ -71,29 +71,18 @@ def require_org(f):
         
         if portal_id:
             # Buscar organização pelo portal_id (via connection)
-            from app.models import DataSourceConnection
-            connection = DataSourceConnection.query.filter_by(
-                source_type='hubspot',
-                config={'portal_id': portal_id}
-            ).first()
-            
-            if connection:
-                organization_id = str(connection.organization_id)
+            from app.utils.helpers import get_organization_id_from_portal_id
+            org_id = get_organization_id_from_portal_id(portal_id)
+            if org_id:
+                organization_id = str(org_id)
         
-        # 3. Se ainda não encontrou, criar organização temporária baseada no portal_id
+        # 3. Se ainda não encontrou e tem portal_id, retornar erro (não criar automaticamente)
+        # A organização deve ser criada explicitamente via migração ou endpoint
         if not organization_id and portal_id:
-            # Para compatibilidade, criar organização on-the-fly se não existir
-            # TODO: Migrar dados existentes para organizações
-            org = Organization.query.filter_by(slug=f"portal-{portal_id}").first()
-            if not org:
-                org = Organization(
-                    name=f"Portal {portal_id}",
-                    slug=f"portal-{portal_id}",
-                    plan='free'
-                )
-                db.session.add(org)
-                db.session.commit()
-            organization_id = str(org.id)
+            return jsonify({
+                'error': 'Organization not found',
+                'message': f'Organização não encontrada para portal_id {portal_id}. Execute a migração de dados primeiro.'
+            }), 404
         
         if not organization_id:
             return jsonify({

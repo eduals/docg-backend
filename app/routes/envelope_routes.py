@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from app.database import db
 from app.models import EnvelopeRelation, EnvelopeExecutionLog
 from app.auth import require_auth
+from app.utils.auth import require_org
 from app.services.envelope_creation_service import EnvelopeCreationService
 from threading import Thread
 import uuid
@@ -46,13 +47,14 @@ def list_envelopes():
 
 
 @bp.route('/create', methods=['POST'])
-@require_auth
+@require_org
 def create_envelope():
     """Criar envelope completo (processo assíncrono)"""
     try:
+        organization_id = g.organization_id
         data = request.get_json()
         
-        required_fields = ['portal_id', 'hubspot_object_type', 'hubspot_object_id', 
+        required_fields = ['hubspot_object_type', 'hubspot_object_id', 
                           'envelope_name', 'documents', 'recipients']
         
         for field in required_fields:
@@ -60,6 +62,14 @@ def create_envelope():
                 return jsonify({
                     'error': f'{field} is required'
                 }), 400
+        
+        # Buscar portal_id via DataSourceConnection para EnvelopeExecutionLog (temporário)
+        from app.models import DataSourceConnection
+        connection = DataSourceConnection.query.filter_by(
+            organization_id=organization_id,
+            source_type='hubspot'
+        ).first()
+        portal_id = connection.config.get('portal_id') if connection and connection.config else None
         
         # Gerar execution_id único
         execution_id = str(uuid.uuid4())
@@ -76,7 +86,7 @@ def create_envelope():
         
         for step in steps:
             log = EnvelopeExecutionLog(
-                portal_id=data['portal_id'],
+                portal_id=portal_id or str(organization_id),  # Temporário: usar portal_id se disponível
                 execution_id=execution_id,
                 step_name=step['name'],
                 step_status='pending',
@@ -92,7 +102,7 @@ def create_envelope():
         
         def process_envelope():
             try:
-                service = EnvelopeCreationService(data['portal_id'], execution_id)
+                service = EnvelopeCreationService(organization_id, execution_id)
                 service.process_envelope_creation(data)
             except Exception as e:
                 # Log de erro final

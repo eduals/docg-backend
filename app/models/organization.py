@@ -16,6 +16,10 @@ class Organization(db.Model):
     billing_email = db.Column(db.String(255))
     stripe_customer_id = db.Column(db.String(255))
     stripe_subscription_id = db.Column(db.String(255))
+    trial_expires_at = db.Column(db.DateTime, nullable=True)
+    plan_expires_at = db.Column(db.DateTime, nullable=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    clicksign_api_key = db.Column(db.Text, nullable=True)  # Temporário - será migrado para DataSourceConnection
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -36,8 +40,27 @@ class Organization(db.Model):
         self.documents_used += 1
         db.session.commit()
     
-    def to_dict(self):
-        return {
+    def get_status(self):
+        """Retorna o status da organização: 'trial', 'expired', ou 'active'"""
+        now = datetime.utcnow()
+        
+        # Se não está ativa
+        if not self.is_active:
+            return 'expired'
+        
+        # Se tem plano ativo e não expirou
+        if self.plan_expires_at and self.plan_expires_at > now:
+            return 'active'
+        
+        # Se trial ainda está ativo
+        if self.trial_expires_at and self.trial_expires_at > now:
+            return 'trial'
+        
+        # Trial expirado e sem plano
+        return 'expired'
+    
+    def to_dict(self, include_api_key=False):
+        data = {
             'id': str(self.id),
             'name': self.name,
             'slug': self.slug,
@@ -46,9 +69,18 @@ class Organization(db.Model):
             'documents_used': self.documents_used,
             'users_limit': self.users_limit,
             'billing_email': self.billing_email,
+            'trial_expires_at': self.trial_expires_at.isoformat() if self.trial_expires_at else None,
+            'plan_expires_at': self.plan_expires_at.isoformat() if self.plan_expires_at else None,
+            'is_active': self.is_active,
+            'status': self.get_status(),
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
+        
+        if include_api_key:
+            data['clicksign_api_key'] = self.clicksign_api_key
+        
+        return data
 
 
 class User(db.Model):

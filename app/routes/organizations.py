@@ -1,9 +1,12 @@
 from flask import Blueprint, request, jsonify, g
 from app.database import db
-from app.models import Organization
+from app.models import Organization, DataSourceConnection
 from app.utils.auth import require_auth, require_org, require_admin
+from app.config import Config
+from datetime import datetime
 import logging
 import re
+import uuid
 
 logger = logging.getLogger(__name__)
 organizations_bp = Blueprint('organizations', __name__, url_prefix='/api/v1/organizations')
@@ -97,4 +100,95 @@ def update_organization(organization_id):
         'success': True,
         'organization': org.to_dict()
     })
+
+
+@organizations_bp.route('/<organization_id>/status', methods=['GET'])
+@require_auth
+@require_org
+def get_organization_status(organization_id):
+    """Retorna status da organização (trial ativo, expirado, plano ativo)"""
+    try:
+        if organization_id != g.organization_id:
+            return jsonify({'error': 'Acesso negado'}), 403
+        
+        org = Organization.query.filter_by(id=organization_id).first_or_404()
+        status = org.get_status()
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'status': status,
+                'trial_expires_at': org.trial_expires_at.isoformat() if org.trial_expires_at else None,
+                'plan_expires_at': org.plan_expires_at.isoformat() if org.plan_expires_at else None,
+                'is_active': org.is_active
+            }
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
+
+
+@organizations_bp.route('/<organization_id>/connections/clicksign', methods=['POST'])
+@require_auth
+@require_org
+@require_admin
+def update_clicksign_key(organization_id):
+    """Salva/atualiza API key do ClickSign via DataSourceConnection"""
+    try:
+        if organization_id != g.organization_id:
+            return jsonify({'error': 'Acesso negado'}), 403
+        
+        data = request.get_json(force=True, silent=True) or {}
+        if not isinstance(data, dict):
+            data = {}
+        
+        clicksign_api_key = data.get('clicksign_api_key')
+        if not clicksign_api_key:
+            return jsonify({
+                'error': 'Missing required field',
+                'message': 'clicksign_api_key é obrigatório no body'
+            }), 400
+        
+        # Buscar ou criar DataSourceConnection para ClickSign
+        connection = DataSourceConnection.query.filter_by(
+            organization_id=organization_id,
+            source_type='clicksign'
+        ).first()
+        
+        if connection:
+            if not connection.credentials:
+                connection.credentials = {}
+            connection.credentials['clicksign_api_key'] = clicksign_api_key
+            connection.status = 'active'
+            connection.updated_at = datetime.utcnow()
+        else:
+            connection = DataSourceConnection(
+                organization_id=organization_id,
+                source_type='clicksign',
+                name="ClickSign Integration",
+                credentials={'clicksign_api_key': clicksign_api_key},
+                status='active'
+            )
+            db.session.add(connection)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'API key salva com sucesso',
+            'data': {
+                'organization_id': str(organization_id),
+                'connection_id': str(connection.id)
+            }
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
 

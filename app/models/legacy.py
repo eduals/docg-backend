@@ -25,7 +25,7 @@ legacy_models.db = db
 spec.loader.exec_module(legacy_models)
 
 # Exportar classes
-Account = legacy_models.Account
+# Account foi removido - migrado para Organization
 FieldMapping = legacy_models.FieldMapping
 EnvelopeRelation = legacy_models.EnvelopeRelation
 GoogleOAuthToken = legacy_models.GoogleOAuthToken
@@ -33,7 +33,6 @@ GoogleDriveConfig = legacy_models.GoogleDriveConfig
 EnvelopeExecutionLog = legacy_models.EnvelopeExecutionLog
 
 __all__ = [
-    'Account',
     'FieldMapping',
     'EnvelopeRelation',
     'GoogleOAuthToken',

@@ -11,7 +11,6 @@ from .execution import WorkflowExecution
 # Usar importação lazy para evitar problemas
 def _import_legacy():
     from .legacy import (
-        Account,
         FieldMapping,
         EnvelopeRelation,
         GoogleOAuthToken,
@@ -19,7 +18,6 @@ def _import_legacy():
         EnvelopeExecutionLog
     )
     return {
-        'Account': Account,
         'FieldMapping': FieldMapping,
         'EnvelopeRelation': EnvelopeRelation,
         'GoogleOAuthToken': GoogleOAuthToken,
@@ -29,7 +27,6 @@ def _import_legacy():
 
 # Importar agora
 _legacy_models = _import_legacy()
-Account = _legacy_models['Account']
 FieldMapping = _legacy_models['FieldMapping']
 EnvelopeRelation = _legacy_models['EnvelopeRelation']
 GoogleOAuthToken = _legacy_models['GoogleOAuthToken']
@@ -68,7 +65,6 @@ __all__ = [
     'SignatureRequest',
     'WorkflowExecution',
     # Legacy models
-    'Account',
     'FieldMapping',
     'EnvelopeRelation',
     'GoogleOAuthToken',

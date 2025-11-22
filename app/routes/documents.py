@@ -104,16 +104,10 @@ def generate_document():
     
     # Gerar documento
     try:
-        # Obter credentials do Google
-        # Para compatibilidade, usar portal_id se disponível
-        portal_id = request.args.get('portal_id') or (data.get('portal_id') if isinstance(data, dict) else None)
-        if not portal_id and workflow.source_connection:
-            portal_id = workflow.source_connection.config.get('portal_id') if workflow.source_connection.config else None
+        # Obter credentials do Google usando organization_id
+        organization_id = g.organization_id
         
-        if not portal_id:
-            return jsonify({'error': 'portal_id necessário para obter credenciais Google'}), 400
-        
-        google_creds = get_google_credentials(portal_id)
+        google_creds = get_google_credentials(organization_id)
         if not google_creds:
             return jsonify({'error': 'Credenciais do Google não configuradas'}), 400
         
@@ -147,14 +141,9 @@ def regenerate_document(document_id):
     
     # Usa os mesmos dados do documento original
     try:
-        portal_id = request.args.get('portal_id')
-        if not portal_id and doc.source_connection:
-            portal_id = doc.source_connection.config.get('portal_id') if doc.source_connection.config else None
+        organization_id = g.organization_id
         
-        if not portal_id:
-            return jsonify({'error': 'portal_id necessário'}), 400
-        
-        google_creds = get_google_credentials(portal_id)
+        google_creds = get_google_credentials(organization_id)
         if not google_creds:
             return jsonify({'error': 'Credenciais do Google não configuradas'}), 400
         

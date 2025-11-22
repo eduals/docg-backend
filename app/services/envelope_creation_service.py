@@ -4,9 +4,10 @@ Processa criação assíncrona de envelopes com progresso
 """
 from app.database import db
 from app.models import (
-    Account, EnvelopeRelation, EnvelopeExecutionLog, 
+    EnvelopeRelation, EnvelopeExecutionLog, 
     FieldMapping, GoogleOAuthToken, GoogleDriveConfig
 )
+from app.models import DataSourceConnection
 from datetime import datetime
 import requests
 import uuid
@@ -23,17 +24,26 @@ from googleapiclient.errors import HttpError
 class EnvelopeCreationService:
     """Serviço para criar envelopes ClickSign"""
     
-    def __init__(self, portal_id, execution_id):
-        self.portal_id = portal_id
+    def __init__(self, organization_id, execution_id):
+        self.organization_id = organization_id
         self.execution_id = execution_id
         self.envelope_id = None
         
     def get_clicksign_token(self):
-        """Obter token ClickSign do portal"""
-        account = Account.query.filter_by(portal_id=self.portal_id).first()
-        if not account or not account.clicksign_api_key:
-            raise Exception("ClickSign API key not configured for this portal")
-        return account.clicksign_api_key
+        """Obter token ClickSign da organização via DataSourceConnection"""
+        connection = DataSourceConnection.query.filter_by(
+            organization_id=self.organization_id,
+            source_type='clicksign'
+        ).first()
+        
+        if not connection or not connection.credentials:
+            raise Exception("ClickSign API key not configured for this organization")
+        
+        clicksign_api_key = connection.credentials.get('clicksign_api_key')
+        if not clicksign_api_key:
+            raise Exception("ClickSign API key not configured for this organization")
+        
+        return clicksign_api_key
     
     def update_log(self, step_name, status, message=None, error_message=None, envelope_id=None):
         """Atualizar log de execução"""
@@ -185,7 +195,7 @@ class EnvelopeCreationService:
     
     def get_google_credentials(self):
         """Obter credenciais Google"""
-        token = GoogleOAuthToken.query.filter_by(portal_id=self.portal_id).first()
+        token = GoogleOAuthToken.query.filter_by(organization_id=self.organization_id).first()
         
         if not token or token.is_expired():
             return None
