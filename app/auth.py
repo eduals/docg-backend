@@ -3,12 +3,19 @@ from flask import request, jsonify
 from app.config import Config
 
 def require_auth(f):
-    """Decorator para exigir autenticação Bearer token"""
+    """Decorator para exigir autenticação Bearer token
+    Aceita token no header Authorization ou no query parameter Authorization
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
+        # Tentar obter do header primeiro (prioridade)
+        auth_value = request.headers.get('Authorization')
         
-        if not auth_header:
+        # Se não encontrou no header, tentar no query parameter
+        if not auth_value:
+            auth_value = request.args.get('Authorization')
+        
+        if not auth_value:
             return jsonify({
                 'error': 'Authorization header missing',
                 'message': 'Bearer token é obrigatório'
@@ -16,7 +23,7 @@ def require_auth(f):
         
         try:
             # Formato esperado: "Bearer {token}"
-            token_type, token = auth_header.split(' ', 1)
+            token_type, token = auth_value.split(' ', 1)
             
             if token_type.lower() != 'bearer':
                 return jsonify({

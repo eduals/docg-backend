@@ -39,10 +39,11 @@ class Workflow(db.Model):
     # Relationships
     creator = db.relationship('User', foreign_keys=[created_by])
     field_mappings = db.relationship('WorkflowFieldMapping', backref='workflow', lazy='dynamic', cascade='all, delete-orphan')
+    ai_mappings = db.relationship('AIGenerationMapping', backref='workflow', lazy='dynamic', cascade='all, delete-orphan')
     documents = db.relationship('GeneratedDocument', backref='workflow', lazy='dynamic')
     executions = db.relationship('WorkflowExecution', backref='workflow', lazy='dynamic')
     
-    def to_dict(self, include_mappings=False):
+    def to_dict(self, include_mappings=False, include_ai_mappings=False):
         result = {
             'id': str(self.id),
             'organization_id': str(self.organization_id),
@@ -66,6 +67,11 @@ class Workflow(db.Model):
         if include_mappings:
             result['field_mappings'] = [
                 m.to_dict() for m in self.field_mappings
+            ]
+        
+        if include_ai_mappings:
+            result['ai_mappings'] = [
+                m.to_dict() for m in self.ai_mappings
             ]
         
         if self.template:
@@ -106,4 +112,74 @@ class WorkflowFieldMapping(db.Model):
             'default_value': self.default_value,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
+
+
+class AIGenerationMapping(db.Model):
+    """
+    Mapeamento de tags AI para geração de texto via LLM.
+    
+    Tags no formato {{ai:nome_da_tag}} são processadas usando este mapeamento
+    para gerar texto dinamicamente via provedores de IA (OpenAI, Gemini, etc).
+    """
+    __tablename__ = 'ai_generation_mappings'
+    
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id', ondelete='CASCADE'), nullable=False)
+    
+    # Tag e configuração
+    ai_tag = db.Column(db.String(255), nullable=False)  # Ex: "paragrapho1"
+    source_fields = db.Column(JSONB)  # Array de campos HubSpot para usar no prompt
+    
+    # Provedor e modelo
+    provider = db.Column(db.String(50), nullable=False)  # 'openai', 'gemini', 'anthropic'
+    model = db.Column(db.String(100), nullable=False)    # 'gpt-4', 'gemini-1.5-pro', etc
+    ai_connection_id = db.Column(UUID(as_uuid=True), db.ForeignKey('data_source_connections.id', ondelete='SET NULL'))
+    
+    # Configuração do prompt
+    prompt_template = db.Column(db.Text)  # Template com placeholders {{field}}
+    temperature = db.Column(db.Float, default=0.7)
+    max_tokens = db.Column(db.Integer, default=1000)
+    
+    # Fallback (se IA falhar)
+    fallback_value = db.Column(db.Text)  # Valor padrão se geração falhar
+    
+    # Métricas de uso (para auditoria/debugging)
+    last_used_at = db.Column(db.DateTime)
+    usage_count = db.Column(db.Integer, default=0)
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Índices
+    __table_args__ = (
+        db.UniqueConstraint('workflow_id', 'ai_tag', name='unique_workflow_ai_tag'),
+        db.Index('idx_ai_mapping_connection', 'ai_connection_id'),
+    )
+    
+    # Relationships
+    ai_connection = db.relationship('DataSourceConnection', foreign_keys=[ai_connection_id])
+    
+    def to_dict(self):
+        return {
+            'id': str(self.id),
+            'workflow_id': str(self.workflow_id),
+            'ai_tag': self.ai_tag,
+            'source_fields': self.source_fields,
+            'provider': self.provider,
+            'model': self.model,
+            'ai_connection_id': str(self.ai_connection_id) if self.ai_connection_id else None,
+            'prompt_template': self.prompt_template,
+            'temperature': self.temperature,
+            'max_tokens': self.max_tokens,
+            'fallback_value': self.fallback_value,
+            'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
+            'usage_count': self.usage_count,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+    
+    def increment_usage(self):
+        """Incrementa contador de uso e atualiza timestamp"""
+        self.usage_count = (self.usage_count or 0) + 1
+        self.last_used_at = datetime.utcnow()
 

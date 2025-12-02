@@ -17,8 +17,6 @@ import logging
 import base64
 import hashlib
 import secrets
-import threading
-import time
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('google_oauth', __name__, url_prefix='/api/v1/google-oauth')
@@ -33,9 +31,7 @@ SCOPES = [
 ]
 
 # Armazenamento temporário para code_verifier (PKCE)
-# Em produção, usar Redis ou cache distribuído
-_pkce_store = {}
-_pkce_lock = threading.Lock()
+# Usando banco de dados para persistir entre reinicializações do servidor
 _PKCE_TTL = 600  # 10 minutos
 
 def _normalize_scopes(scopes):
@@ -78,34 +74,65 @@ def _generate_code_challenge(verifier):
     return base64.urlsafe_b64encode(challenge).decode('utf-8').rstrip('=')
 
 def _store_pkce_verifier(state, verifier):
-    """Armazena code_verifier temporariamente associado ao state"""
-    with _pkce_lock:
-        _pkce_store[state] = {
-            'verifier': verifier,
-            'expires_at': time.time() + _PKCE_TTL
-        }
-        # Limpar entradas expiradas
-        _cleanup_expired_pkce()
+    """Armazena code_verifier temporariamente associado ao state no banco de dados"""
+    from app.models import PKCEVerifier
+    
+    expires_at = datetime.utcnow() + timedelta(seconds=_PKCE_TTL)
+    
+    # Remover entrada existente se houver (one-time use)
+    existing = PKCEVerifier.query.filter_by(state=state).first()
+    if existing:
+        db.session.delete(existing)
+    
+    # Criar nova entrada
+    pkce_entry = PKCEVerifier(
+        state=state,
+        code_verifier=verifier,
+        expires_at=expires_at
+    )
+    db.session.add(pkce_entry)
+    db.session.commit()
+    
+    # Limpar entradas expiradas (background cleanup)
+    _cleanup_expired_pkce()
 
 def _get_pkce_verifier(state):
-    """Recupera code_verifier associado ao state"""
-    with _pkce_lock:
-        if state not in _pkce_store:
-            return None
-        entry = _pkce_store[state]
-        if time.time() > entry['expires_at']:
-            del _pkce_store[state]
-            return None
-        verifier = entry['verifier']
-        del _pkce_store[state]  # Remover após uso (one-time use)
-        return verifier
+    """Recupera code_verifier associado ao state do banco de dados"""
+    from app.models import PKCEVerifier
+    
+    if not state:
+        return None
+    
+    entry = PKCEVerifier.query.filter_by(state=state).first()
+    
+    if not entry:
+        return None
+    
+    # Verificar se expirou
+    if datetime.utcnow() > entry.expires_at:
+        db.session.delete(entry)
+        db.session.commit()
+        return None
+    
+    # Recuperar verifier e remover (one-time use)
+    verifier = entry.code_verifier
+    db.session.delete(entry)
+    db.session.commit()
+    
+    return verifier
 
 def _cleanup_expired_pkce():
-    """Remove entradas expiradas do store"""
-    now = time.time()
-    expired_keys = [k for k, v in _pkce_store.items() if now > v['expires_at']]
-    for key in expired_keys:
-        del _pkce_store[key]
+    """Remove entradas expiradas do banco de dados"""
+    from app.models import PKCEVerifier
+    
+    try:
+        expired = PKCEVerifier.query.filter(PKCEVerifier.expires_at < datetime.utcnow()).all()
+        for entry in expired:
+            db.session.delete(entry)
+        db.session.commit()
+    except Exception as e:
+        logger.warning(f"Erro ao limpar PKCE expirados: {str(e)}")
+        db.session.rollback()
 
 @bp.route('/status', methods=['GET'])
 @require_org
@@ -154,11 +181,20 @@ def get_oauth_status():
 
 
 @bp.route('/authorize', methods=['GET'])
-@require_org
+@require_auth
 def authorize():
-    """Iniciar fluxo OAuth com PKCE (Proof Key for Code Exchange)"""
+    """
+    Iniciar fluxo OAuth com PKCE (Proof Key for Code Exchange).
+    
+    Para primeiro acesso: não requer organization_id - será criado automaticamente no callback.
+    Para acessos subsequentes: pode enviar organization_id opcionalmente.
+    """
     try:
-        organization_id = g.organization_id
+        # organization_id é opcional - buscar de query params ou body, mas não exigir
+        organization_id = request.args.get('organization_id')
+        if not organization_id and request.is_json:
+            organization_id = (request.get_json() or {}).get('organization_id')
+        
         redirect_uri = request.args.get('redirect_uri')
         
         if not redirect_uri:
@@ -167,10 +203,11 @@ def authorize():
             }), 400
         
         # Configurar OAuth flow
-        client_id = os.getenv('GOOGLE_CLIENT_ID')
-        client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
+        client_id = os.getenv('GOOGLE_CLIENT_ID', '').strip()
+        client_secret = os.getenv('GOOGLE_CLIENT_SECRET', '').strip()
         
         if not client_id or not client_secret:
+            logger.error(f"Google OAuth credentials not configured - client_id: {bool(client_id)}, client_secret: {bool(client_secret)}")
             return jsonify({
                 'error': 'Google OAuth credentials not configured'
             }), 500
@@ -202,11 +239,15 @@ def authorize():
             code_challenge_method='S256'
         )
         
-        # Armazenar code_verifier associado ao state
+        # Armazenar code_verifier associado ao state (no banco de dados para persistir entre reinicializações)
         _store_pkce_verifier(state, code_verifier)
         
-        # Incluir organization_id no state para recuperação no callback
-        state_with_org = f"{state}:{organization_id}"
+        # Incluir organization_id no state apenas se existir
+        # Se não existir, o callback criará automaticamente
+        if organization_id:
+            state_with_org = f"{state}:{organization_id}"
+        else:
+            state_with_org = state
         
         return jsonify({
             'success': True,
@@ -270,10 +311,11 @@ def callback():
             redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/api/v1/google-oauth/callback')
         
         # Configurar OAuth flow
-        client_id = os.getenv('GOOGLE_CLIENT_ID')
-        client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
+        client_id = os.getenv('GOOGLE_CLIENT_ID', '').strip()
+        client_secret = os.getenv('GOOGLE_CLIENT_SECRET', '').strip()
         
         if not client_id or not client_secret:
+            logger.error(f"Callback: Google OAuth credentials not configured - client_id: {bool(client_id)}, client_secret: {bool(client_secret)}")
             return jsonify({
                 'error': 'Google OAuth credentials not configured'
             }), 500
@@ -351,22 +393,28 @@ def callback():
                     slug = f"{slug_base}-{counter}"
                     counter += 1
                 
+                # Configurar trial (20 dias por padrão)
+                trial_expires_at = datetime.utcnow() + timedelta(days=Config.TRIAL_DAYS)
+                
                 org = Organization(
                     name=org_name,
                     slug=slug,
                     plan='free',
-                    billing_email=google_email
+                    billing_email=google_email,
+                    trial_expires_at=trial_expires_at
                 )
                 db.session.add(org)
                 db.session.flush()  # Para obter o ID
                 
                 # Criar usuário admin
+                # hubspot_user_id será NULL inicialmente - será preenchido quando instalar app no HubSpot
                 admin_user = User(
                     organization_id=org.id,
                     email=google_email,
                     name=google_name,
                     role='admin',
-                    google_user_id=google_user_id
+                    google_user_id=google_user_id,
+                    hubspot_user_id=None  # Será preenchido depois quando instalar app no HubSpot
                 )
                 db.session.add(admin_user)
                 organization_id = str(org.id)

@@ -2,10 +2,11 @@
 from .organization import Organization, User, OrganizationFeature
 from .connection import DataSourceConnection
 from .template import Template
-from .workflow import Workflow, WorkflowFieldMapping
+from .workflow import Workflow, WorkflowFieldMapping, AIGenerationMapping
 from .document import GeneratedDocument
 from .signature import SignatureRequest
 from .execution import WorkflowExecution
+from .pkce import PKCEVerifier
 
 # Importar models legados DEPOIS (para evitar importação circular)
 # Usar importação lazy para evitar problemas
@@ -61,6 +62,7 @@ __all__ = [
     'Template',
     'Workflow',
     'WorkflowFieldMapping',
+    'AIGenerationMapping',
     'GeneratedDocument',
     'SignatureRequest',
     'WorkflowExecution',
@@ -70,6 +72,7 @@ __all__ = [
     'GoogleOAuthToken',
     'GoogleDriveConfig',
     'EnvelopeExecutionLog',
-    'RiscEvent'
+    'RiscEvent',
+    'PKCEVerifier'
 ]
 

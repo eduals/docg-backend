@@ -1,11 +1,14 @@
 from flask import Blueprint, request, jsonify, g
 from app.database import db
-from app.models import Workflow, WorkflowFieldMapping, Template
+from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection
 from app.utils.auth import require_auth, require_org, require_admin
 import logging
 
 logger = logging.getLogger(__name__)
 workflows_bp = Blueprint('workflows', __name__, url_prefix='/api/v1/workflows')
+
+# Provedores de IA suportados
+AI_PROVIDERS = ['openai', 'gemini', 'anthropic']
 
 
 @workflows_bp.route('', methods=['GET'])
@@ -206,7 +209,7 @@ def activate_workflow(workflow_id):
     })
 
 
-def workflow_to_dict(workflow: Workflow, include_mappings: bool = False) -> dict:
+def workflow_to_dict(workflow: Workflow, include_mappings: bool = False, include_ai_mappings: bool = False) -> dict:
     """Converte workflow para dicionário"""
     result = {
         'id': str(workflow.id),
@@ -238,6 +241,9 @@ def workflow_to_dict(workflow: Workflow, include_mappings: bool = False) -> dict
             for m in workflow.field_mappings
         ]
     
+    if include_ai_mappings:
+        result['ai_mappings'] = [m.to_dict() for m in workflow.ai_mappings]
+    
     # Incluir info do template se disponível
     if workflow.template:
         result['template'] = {
@@ -248,4 +254,233 @@ def workflow_to_dict(workflow: Workflow, include_mappings: bool = False) -> dict
         }
     
     return result
+
+
+# ==================== AI MAPPING ENDPOINTS ====================
+
+@workflows_bp.route('/<workflow_id>/ai-mappings', methods=['GET'])
+@require_auth
+@require_org
+def list_ai_mappings(workflow_id):
+    """Lista mapeamentos de IA de um workflow"""
+    workflow = Workflow.query.filter_by(
+        id=workflow_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    mappings = AIGenerationMapping.query.filter_by(
+        workflow_id=workflow.id
+    ).order_by(AIGenerationMapping.created_at.desc()).all()
+    
+    return jsonify({
+        'ai_mappings': [m.to_dict() for m in mappings]
+    })
+
+
+@workflows_bp.route('/<workflow_id>/ai-mappings', methods=['POST'])
+@require_auth
+@require_org
+@require_admin
+def create_ai_mapping(workflow_id):
+    """
+    Cria um novo mapeamento de IA para o workflow.
+    
+    Body:
+    {
+        "ai_tag": "paragrapho1",
+        "source_fields": ["dealname", "amount", "company.name"],
+        "provider": "openai",
+        "model": "gpt-4",
+        "ai_connection_id": "uuid",
+        "prompt_template": "Gere um parágrafo descrevendo o deal {{dealname}}...",
+        "temperature": 0.7,
+        "max_tokens": 500,
+        "fallback_value": "[Texto não gerado]"
+    }
+    """
+    workflow = Workflow.query.filter_by(
+        id=workflow_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    data = request.get_json()
+    
+    # Validações
+    required = ['ai_tag', 'provider', 'model']
+    for field in required:
+        if not data.get(field):
+            return jsonify({'error': f'{field} é obrigatório'}), 400
+    
+    # Validar provider
+    provider = data['provider'].lower()
+    if provider not in AI_PROVIDERS:
+        return jsonify({
+            'error': f'Provedor não suportado. Use: {", ".join(AI_PROVIDERS)}'
+        }), 400
+    
+    # Validar ai_connection_id se fornecido
+    ai_connection_id = data.get('ai_connection_id')
+    if ai_connection_id:
+        connection = DataSourceConnection.query.filter_by(
+            id=ai_connection_id,
+            organization_id=g.organization_id,
+            source_type=provider
+        ).first()
+        if not connection:
+            return jsonify({
+                'error': 'Conexão de IA não encontrada ou não corresponde ao provider'
+            }), 400
+    
+    # Verificar se tag já existe no workflow
+    existing = AIGenerationMapping.query.filter_by(
+        workflow_id=workflow.id,
+        ai_tag=data['ai_tag']
+    ).first()
+    
+    if existing:
+        return jsonify({
+            'error': f'Tag AI "{data["ai_tag"]}" já existe neste workflow'
+        }), 409
+    
+    # Criar mapeamento
+    mapping = AIGenerationMapping(
+        workflow_id=workflow.id,
+        ai_tag=data['ai_tag'],
+        source_fields=data.get('source_fields', []),
+        provider=provider,
+        model=data['model'],
+        ai_connection_id=ai_connection_id,
+        prompt_template=data.get('prompt_template'),
+        temperature=data.get('temperature', 0.7),
+        max_tokens=data.get('max_tokens', 1000),
+        fallback_value=data.get('fallback_value')
+    )
+    
+    db.session.add(mapping)
+    db.session.commit()
+    
+    logger.info(f"AI mapping criado: workflow={workflow_id}, tag={data['ai_tag']}")
+    
+    return jsonify({
+        'success': True,
+        'ai_mapping': mapping.to_dict()
+    }), 201
+
+
+@workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['GET'])
+@require_auth
+@require_org
+def get_ai_mapping(workflow_id, mapping_id):
+    """Retorna detalhes de um mapeamento de IA"""
+    workflow = Workflow.query.filter_by(
+        id=workflow_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    mapping = AIGenerationMapping.query.filter_by(
+        id=mapping_id,
+        workflow_id=workflow.id
+    ).first_or_404()
+    
+    return jsonify(mapping.to_dict())
+
+
+@workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['PATCH'])
+@require_auth
+@require_org
+@require_admin
+def update_ai_mapping(workflow_id, mapping_id):
+    """
+    Atualiza um mapeamento de IA.
+    
+    Body (todos opcionais):
+    {
+        "source_fields": [...],
+        "provider": "gemini",
+        "model": "gemini-1.5-pro",
+        "ai_connection_id": "uuid",
+        "prompt_template": "...",
+        "temperature": 0.5,
+        "max_tokens": 800,
+        "fallback_value": "..."
+    }
+    """
+    workflow = Workflow.query.filter_by(
+        id=workflow_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    mapping = AIGenerationMapping.query.filter_by(
+        id=mapping_id,
+        workflow_id=workflow.id
+    ).first_or_404()
+    
+    data = request.get_json()
+    
+    # Atualizar campos permitidos
+    if 'source_fields' in data:
+        mapping.source_fields = data['source_fields']
+    
+    if 'provider' in data:
+        provider = data['provider'].lower()
+        if provider not in AI_PROVIDERS:
+            return jsonify({
+                'error': f'Provedor não suportado. Use: {", ".join(AI_PROVIDERS)}'
+            }), 400
+        mapping.provider = provider
+    
+    if 'model' in data:
+        mapping.model = data['model']
+    
+    if 'ai_connection_id' in data:
+        ai_connection_id = data['ai_connection_id']
+        if ai_connection_id:
+            connection = DataSourceConnection.query.filter_by(
+                id=ai_connection_id,
+                organization_id=g.organization_id
+            ).first()
+            if not connection:
+                return jsonify({'error': 'Conexão de IA não encontrada'}), 400
+        mapping.ai_connection_id = ai_connection_id
+    
+    if 'prompt_template' in data:
+        mapping.prompt_template = data['prompt_template']
+    
+    if 'temperature' in data:
+        mapping.temperature = data['temperature']
+    
+    if 'max_tokens' in data:
+        mapping.max_tokens = data['max_tokens']
+    
+    if 'fallback_value' in data:
+        mapping.fallback_value = data['fallback_value']
+    
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'ai_mapping': mapping.to_dict()
+    })
+
+
+@workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['DELETE'])
+@require_auth
+@require_org
+@require_admin
+def delete_ai_mapping(workflow_id, mapping_id):
+    """Deleta um mapeamento de IA"""
+    workflow = Workflow.query.filter_by(
+        id=workflow_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    mapping = AIGenerationMapping.query.filter_by(
+        id=mapping_id,
+        workflow_id=workflow.id
+    ).first_or_404()
+    
+    db.session.delete(mapping)
+    db.session.commit()
+    
+    return jsonify({'success': True})
 

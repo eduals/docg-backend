@@ -6,12 +6,19 @@ from app.database import db
 import uuid
 
 def require_auth(f):
-    """Decorator para exigir autenticação Bearer token"""
+    """Decorator para exigir autenticação Bearer token
+    Aceita token no header Authorization ou no query parameter Authorization
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
+        # Tentar obter do header primeiro (prioridade)
+        auth_value = request.headers.get('Authorization')
         
-        if not auth_header:
+        # Se não encontrou no header, tentar no query parameter
+        if not auth_value:
+            auth_value = request.args.get('Authorization')
+        
+        if not auth_value:
             return jsonify({
                 'error': 'Authorization header missing',
                 'message': 'Bearer token é obrigatório'
@@ -19,7 +26,7 @@ def require_auth(f):
         
         try:
             # Formato esperado: "Bearer {token}"
-            token_type, token = auth_header.split(' ', 1)
+            token_type, token = auth_value.split(' ', 1)
             
             if token_type.lower() != 'bearer':
                 return jsonify({
@@ -56,11 +63,20 @@ def require_org(f):
         # Tentar obter organization_id de várias formas
         organization_id = None
         
-        # 1. Diretamente do request (query param ou body)
-        if request.args.get('organization_id'):
-            organization_id = request.args.get('organization_id')
-        elif request.is_json and request.get_json():
-            organization_id = request.get_json().get('organization_id')
+        # 1. Path parameter (kwargs) - prioridade mais alta
+        if kwargs.get('organization_id'):
+            organization_id = kwargs.get('organization_id')
+        
+        # 2. Header X-Organization-ID
+        if not organization_id:
+            organization_id = request.headers.get('X-Organization-ID')
+        
+        # 3. Diretamente do request (query param ou body)
+        if not organization_id:
+            if request.args.get('organization_id'):
+                organization_id = request.args.get('organization_id')
+            elif request.is_json and request.get_json():
+                organization_id = request.get_json().get('organization_id')
         
         # 2. Via portal_id (compatibilidade com código antigo)
         portal_id = None

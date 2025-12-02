@@ -7,7 +7,11 @@ from app.utils.encryption import encrypt_credentials, decrypt_credentials
 import logging
 
 logger = logging.getLogger(__name__)
+ai_logger = logging.getLogger('docugen.ai')
 connections_bp = Blueprint('connections', __name__, url_prefix='/api/v1/connections')
+
+# Provedores de IA suportados
+AI_PROVIDERS = ['openai', 'gemini', 'anthropic']
 
 
 @connections_bp.route('', methods=['GET'])
@@ -199,4 +203,242 @@ def delete_connection(connection_id):
     db.session.commit()
     
     return jsonify({'success': True})
+
+
+# ==================== AI CONNECTION ENDPOINTS ====================
+
+@connections_bp.route('/ai', methods=['POST'])
+@require_auth
+@require_org
+@require_admin
+def create_ai_connection():
+    """
+    Cria uma nova conexão de IA (BYOK - Bring Your Own Key).
+    
+    Body:
+    {
+        "provider": "openai",  # openai, gemini, anthropic
+        "api_key": "sk-...",
+        "name": "OpenAI Production"  # opcional
+    }
+    """
+    data = request.get_json()
+    
+    # Validar provider
+    provider = data.get('provider', '').lower()
+    if provider not in AI_PROVIDERS:
+        return jsonify({
+            'error': f'Provedor não suportado. Use: {", ".join(AI_PROVIDERS)}'
+        }), 400
+    
+    # Validar API key
+    api_key = data.get('api_key')
+    if not api_key:
+        return jsonify({'error': 'api_key é obrigatório'}), 400
+    
+    # Nome padrão se não fornecido
+    name = data.get('name', f'{provider.title()} Connection')
+    
+    # Verificar se já existe conexão para este provider
+    existing = DataSourceConnection.query.filter_by(
+        organization_id=g.organization_id,
+        source_type=provider
+    ).first()
+    
+    if existing:
+        return jsonify({
+            'error': f'Já existe uma conexão para {provider}. Use PUT para atualizar.'
+        }), 409
+    
+    # Criptografar API key
+    encrypted_creds = encrypt_credentials({'api_key': api_key})
+    
+    # Criar conexão
+    connection = DataSourceConnection(
+        organization_id=g.organization_id,
+        source_type=provider,
+        name=name,
+        credentials={'encrypted': encrypted_creds},
+        config={'provider_type': 'ai'},
+        status='pending'  # Será 'active' após teste
+    )
+    
+    db.session.add(connection)
+    db.session.commit()
+    
+    ai_logger.info(f"[AI] Conexão criada - provider={provider}, org={g.organization_id}")
+    
+    return jsonify({
+        'success': True,
+        'connection': connection.to_dict(include_credentials=False)
+    }), 201
+
+
+@connections_bp.route('/ai', methods=['GET'])
+@require_auth
+@require_org
+def list_ai_connections():
+    """Lista conexões de IA da organização"""
+    org_id = g.organization_id
+    query = DataSourceConnection.query.filter_by(organization_id=org_id)
+    query = query.filter(DataSourceConnection.source_type.in_(AI_PROVIDERS))
+    connections = query.order_by(DataSourceConnection.created_at.desc()).all()
+    print("connections to dict: ", [conn.to_dict(include_credentials=False) for conn in connections])
+    
+    return jsonify({
+        'connections': [conn.to_dict(include_credentials=False) for conn in connections]
+    })
+
+
+@connections_bp.route('/ai/<connection_id>', methods=['GET'])
+@require_auth
+@require_org
+def get_ai_connection(connection_id):
+    """Retorna detalhes de uma conexão de IA"""
+    org_id = g.organization_id
+    query = DataSourceConnection.query.filter_by(
+        id=connection_id,
+        organization_id=org_id
+    )
+    query = query.filter(DataSourceConnection.source_type.in_(AI_PROVIDERS))
+    connection = query.first_or_404()
+    
+    return jsonify(connection.to_dict(include_credentials=False))
+
+
+@connections_bp.route('/ai/<connection_id>', methods=['PATCH'])
+@require_auth
+@require_org
+@require_admin
+def update_ai_connection(connection_id):
+    """
+    Atualiza uma conexão de IA.
+    
+    Body:
+    {
+        "api_key": "sk-new...",  # opcional
+        "name": "Novo nome"  # opcional
+    }
+    """
+    org_id = g.organization_id
+    query = DataSourceConnection.query.filter_by(
+        id=connection_id,
+        organization_id=org_id
+    )
+    query = query.filter(DataSourceConnection.source_type.in_(AI_PROVIDERS))
+    connection = query.first_or_404()
+    
+    data = request.get_json()
+    
+    if 'name' in data:
+        connection.name = data['name']
+    
+    if 'api_key' in data:
+        encrypted_creds = encrypt_credentials({'api_key': data['api_key']})
+        connection.credentials = {'encrypted': encrypted_creds}
+        connection.status = 'pending'  # Precisa testar novamente
+    
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'connection': connection.to_dict(include_credentials=False)
+    })
+
+
+@connections_bp.route('/ai/<connection_id>', methods=['DELETE'])
+@require_auth
+@require_org
+@require_admin
+def delete_ai_connection(connection_id):
+    """Deleta uma conexão de IA"""
+    org_id = g.organization_id
+    query = DataSourceConnection.query.filter_by(
+        id=connection_id,
+        organization_id=org_id
+    )
+    query = query.filter(DataSourceConnection.source_type.in_(AI_PROVIDERS))
+    connection = query.first_or_404()
+    
+    # Verificar se tem mapeamentos usando
+    from app.models import AIGenerationMapping
+    mappings_count = AIGenerationMapping.query.filter_by(
+        ai_connection_id=connection_id
+    ).count()
+    
+    if mappings_count > 0:
+        return jsonify({
+            'error': f'Conexão está sendo usada por {mappings_count} mapeamento(s) de IA. Remova-os primeiro.'
+        }), 400
+    
+    db.session.delete(connection)
+    db.session.commit()
+    
+    return jsonify({'success': True})
+
+
+@connections_bp.route('/ai/<connection_id>/test', methods=['POST'])
+@require_auth
+@require_org
+def test_ai_connection(connection_id):
+    """
+    Testa uma conexão de IA validando a API key.
+    
+    Response:
+    {
+        "valid": true,
+        "provider": "openai",
+        "message": "API key válida"
+    }
+    """
+    org_id = g.organization_id
+    query = DataSourceConnection.query.filter_by(
+        id=connection_id,
+        organization_id=org_id
+    )
+    query = query.filter(DataSourceConnection.source_type.in_(AI_PROVIDERS))
+    connection = query.first_or_404()
+    
+    try:
+        # Descriptografar API key
+        if not connection.credentials or not connection.credentials.get('encrypted'):
+            return jsonify({
+                'valid': False,
+                'provider': connection.source_type,
+                'message': 'API key não configurada'
+            }), 400
+        
+        decrypted = decrypt_credentials(connection.credentials['encrypted'])
+        api_key = decrypted.get('api_key')
+        
+        if not api_key:
+            return jsonify({
+                'valid': False,
+                'provider': connection.source_type,
+                'message': 'API key não encontrada'
+            }), 400
+        
+        # Testar com o serviço de LLM
+        from app.services.ai import LLMService
+        llm_service = LLMService()
+        result = llm_service.validate_api_key(connection.source_type, api_key)
+        
+        # Atualizar status da conexão
+        if result['valid']:
+            connection.status = 'active'
+        else:
+            connection.status = 'error'
+        db.session.commit()
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Erro ao testar conexão AI: {str(e)}")
+        connection.status = 'error'
+        db.session.commit()
+        return jsonify({
+            'valid': False,
+            'provider': connection.source_type,
+            'message': str(e)
+        }), 500
 

@@ -1,25 +1,89 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 import logging
+import time
 
 from app.database import db
 from app.models import (
     Workflow, GeneratedDocument, Template, 
-    WorkflowFieldMapping, Organization, WorkflowExecution
+    WorkflowFieldMapping, Organization, WorkflowExecution,
+    AIGenerationMapping
 )
+from app.utils.encryption import decrypt_credentials
 from .google_docs import GoogleDocsService
 from .tag_processor import TagProcessor
 
 logger = logging.getLogger(__name__)
+ai_logger = logging.getLogger('docugen.ai')
+
+class AIGenerationMetrics:
+    """Classe para rastrear métricas de geração de IA"""
+    
+    def __init__(self):
+        self.details: List[Dict] = []
+        self.total_time_ms = 0
+        self.total_tokens = 0
+        self.total_cost = 0.0
+        self.successful = 0
+        self.failed = 0
+    
+    def add_success(self, mapping: 'AIGenerationMapping', time_ms: float, tokens: int = 0, cost: float = 0.0):
+        self.details.append({
+            'tag': mapping.ai_tag,
+            'provider': mapping.provider,
+            'model': mapping.model,
+            'time_ms': round(time_ms),
+            'tokens': tokens,
+            'cost_usd': cost,
+            'status': 'success'
+        })
+        self.total_time_ms += time_ms
+        self.total_tokens += tokens
+        self.total_cost += cost
+        self.successful += 1
+    
+    def add_failure(self, mapping: 'AIGenerationMapping', error: str, time_ms: float = 0):
+        self.details.append({
+            'tag': mapping.ai_tag,
+            'provider': mapping.provider,
+            'model': mapping.model,
+            'time_ms': round(time_ms),
+            'status': 'failed',
+            'error': error
+        })
+        self.total_time_ms += time_ms
+        self.failed += 1
+    
+    def to_dict(self) -> Dict:
+        return {
+            'total_tags': len(self.details),
+            'successful': self.successful,
+            'failed': self.failed,
+            'total_time_ms': round(self.total_time_ms),
+            'total_tokens': self.total_tokens,
+            'estimated_cost_usd': round(self.total_cost, 6),
+            'details': self.details
+        }
+
 
 class DocumentGenerator:
     """
     Orquestrador principal de geração de documentos.
     Coordena a busca de dados, processamento de template e geração do documento.
+    Suporta geração de texto via IA para tags {{ai:...}}.
     """
     
     def __init__(self, google_credentials):
         self.google_docs = GoogleDocsService(google_credentials)
+        self._llm_service = None
+    
+    @property
+    def llm_service(self):
+        """Lazy load do serviço de LLM"""
+        if self._llm_service is None:
+            from app.services.ai import LLMService
+            self._llm_service = LLMService()
+        return self._llm_service
     
     def generate_from_workflow(
         self,
@@ -65,11 +129,22 @@ class DocumentGenerator:
             if not template:
                 raise Exception('Template não configurado no workflow')
             
-            # Buscar mapeamentos
+            # Normalizar dados do HubSpot (move properties para nível raiz)
+            source_data = self._normalize_hubspot_data(source_data)
+            
+            # Buscar mapeamentos de campos
             mappings = {
                 m.template_tag: m.source_field 
                 for m in workflow.field_mappings
             }
+            
+            # Processar tags AI antes de copiar o template
+            ai_metrics = AIGenerationMetrics()
+            ai_replacements = {}
+            
+            # Buscar tags AI do template (precisamos do conteúdo primeiro)
+            # Por enquanto, vamos processar após copiar o template
+            # O ideal seria ter cache do conteúdo do template
             
             # Gerar nome do documento
             doc_name = self._generate_document_name(
@@ -85,10 +160,20 @@ class DocumentGenerator:
                 folder_id=workflow.output_folder_id
             )
             
-            # Substituir tags
+            # Processar tags AI primeiro
+            ai_replacements = self._process_ai_tags(
+                workflow=workflow,
+                source_data=source_data,
+                metrics=ai_metrics
+            )
+            
+            # Combinar mapeamentos normais com substituições AI
+            combined_data = {**source_data, **ai_replacements}
+            
+            # Substituir tags (normais e AI)
             self.google_docs.replace_tags_in_document(
                 document_id=new_doc['id'],
-                data=source_data,
+                data=combined_data,
                 mappings=mappings
             )
             
@@ -133,6 +218,10 @@ class DocumentGenerator:
             execution.execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
             execution.generated_document_id = generated_doc.id
             
+            # Salvar métricas de IA se houver
+            if ai_metrics.details:
+                execution.ai_metrics = ai_metrics.to_dict()
+            
             db.session.commit()
             
             logger.info(f"Documento gerado com sucesso: {generated_doc.id}")
@@ -148,6 +237,56 @@ class DocumentGenerator:
                 db.session.commit()
             
             raise
+    
+    def _normalize_hubspot_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normaliza dados do HubSpot movendo properties para o nível raiz.
+        
+        Os dados do HubSpot vêm no formato:
+        {
+            'id': '...',
+            'properties': {
+                'dealname': '...',
+                'telefone_do_contato': '...',
+                ...
+            },
+            'associations': {...}
+        }
+        
+        Este método normaliza para:
+        {
+            'id': '...',
+            'dealname': '...',
+            'telefone_do_contato': '...',
+            'associations': {...}
+        }
+        
+        Args:
+            data: Dados do HubSpot com estrutura aninhada
+        
+        Returns:
+            Dados normalizados com properties no nível raiz
+        """
+        if not isinstance(data, dict):
+            return data
+        
+        # Se não tem 'properties', retorna como está (já normalizado ou outro formato)
+        if 'properties' not in data:
+            return data
+        
+        # Criar cópia dos dados
+        normalized = data.copy()
+        
+        # Mesclar properties no nível raiz
+        properties = normalized.pop('properties', {})
+        if isinstance(properties, dict):
+            normalized.update(properties)
+        
+        # Manter associations no nível raiz para acesso via dot notation
+        # (ex: associations.company.name)
+        # associations já está em normalized, não precisa fazer nada
+        
+        return normalized
     
     def _generate_document_name(
         self, 
@@ -201,4 +340,155 @@ class DocumentGenerator:
             'id': file['id'],
             'url': file.get('webViewLink', f"https://drive.google.com/file/d/{file['id']}/view")
         }
+    
+    def _process_ai_tags(
+        self,
+        workflow: Workflow,
+        source_data: Dict[str, Any],
+        metrics: AIGenerationMetrics
+    ) -> Dict[str, str]:
+        """
+        Processa todas as tags AI do workflow.
+        
+        Args:
+            workflow: Workflow com mapeamentos de IA
+            source_data: Dados da fonte para montar prompts
+            metrics: Objeto para rastrear métricas
+        
+        Returns:
+            Dicionário com {ai:tag_name: texto_gerado}
+        """
+        from app.services.ai import LLMService, AIGenerationError, AITimeoutError, AIQuotaExceededError, AIInvalidKeyError
+        from app.services.ai.utils import get_model_string
+        
+        replacements = {}
+        
+        # Buscar mapeamentos de IA do workflow
+        ai_mappings = list(workflow.ai_mappings)
+        
+        if not ai_mappings:
+            return replacements
+        
+        ai_logger.info(f"[AI] Processando {len(ai_mappings)} tags AI para workflow {workflow.id}")
+        
+        for mapping in ai_mappings:
+            start_time = time.time()
+            tag_key = f"ai:{mapping.ai_tag}"
+            
+            try:
+                # Buscar API key da conexão
+                api_key = self._get_ai_api_key(mapping)
+                if not api_key:
+                    raise AIInvalidKeyError(
+                        "Conexão de IA não configurada ou API key não encontrada",
+                        mapping.provider,
+                        mapping.model
+                    )
+                
+                # Montar prompt
+                prompt = TagProcessor.build_ai_prompt(
+                    prompt_template=mapping.prompt_template,
+                    source_data=source_data,
+                    source_fields=mapping.source_fields
+                )
+                
+                # Gerar texto
+                model_string = get_model_string(mapping.provider, mapping.model)
+                response = self.llm_service.generate_text(
+                    model=model_string,
+                    prompt=prompt,
+                    api_key=api_key,
+                    temperature=mapping.temperature or 0.7,
+                    max_tokens=mapping.max_tokens or 1000,
+                    timeout=60
+                )
+                
+                # Salvar resultado
+                replacements[tag_key] = response.text
+                elapsed_ms = (time.time() - start_time) * 1000
+                
+                # Atualizar métricas
+                metrics.add_success(
+                    mapping=mapping,
+                    time_ms=elapsed_ms,
+                    tokens=response.total_tokens,
+                    cost=response.estimated_cost_usd
+                )
+                
+                # Atualizar contador de uso do mapping
+                mapping.increment_usage()
+                
+                ai_logger.info(
+                    f"[AI] Tag '{mapping.ai_tag}' gerada - "
+                    f"tokens={response.total_tokens}, time_ms={elapsed_ms:.0f}"
+                )
+                
+            except (AIQuotaExceededError, AIInvalidKeyError) as e:
+                # Erros críticos - propagar para interromper documento
+                elapsed_ms = (time.time() - start_time) * 1000
+                metrics.add_failure(mapping, str(e), elapsed_ms)
+                ai_logger.error(f"[AI] Erro crítico na tag '{mapping.ai_tag}': {e}")
+                raise
+            
+            except AITimeoutError as e:
+                # Timeout - usar fallback
+                elapsed_ms = (time.time() - start_time) * 1000
+                metrics.add_failure(mapping, str(e), elapsed_ms)
+                fallback = mapping.fallback_value or f"[Timeout: {mapping.ai_tag}]"
+                replacements[tag_key] = fallback
+                ai_logger.warning(f"[AI] Timeout na tag '{mapping.ai_tag}', usando fallback")
+            
+            except AIGenerationError as e:
+                # Outros erros de IA - usar fallback
+                elapsed_ms = (time.time() - start_time) * 1000
+                metrics.add_failure(mapping, str(e), elapsed_ms)
+                fallback = mapping.fallback_value or f"[Erro: {mapping.ai_tag}]"
+                replacements[tag_key] = fallback
+                ai_logger.warning(f"[AI] Erro na tag '{mapping.ai_tag}': {e}")
+            
+            except Exception as e:
+                # Erro inesperado - usar fallback
+                elapsed_ms = (time.time() - start_time) * 1000
+                metrics.add_failure(mapping, str(e), elapsed_ms)
+                fallback = mapping.fallback_value or f"[Erro: {mapping.ai_tag}]"
+                replacements[tag_key] = fallback
+                ai_logger.error(f"[AI] Erro inesperado na tag '{mapping.ai_tag}': {e}")
+        
+        return replacements
+    
+    def _get_ai_api_key(self, mapping: AIGenerationMapping) -> Optional[str]:
+        """
+        Obtém a API key descriptografada para a conexão de IA.
+        
+        Args:
+            mapping: Mapeamento de IA com referência à conexão
+        
+        Returns:
+            API key descriptografada ou None
+        """
+        if not mapping.ai_connection_id:
+            return None
+        
+        connection = mapping.ai_connection
+        if not connection:
+            return None
+        
+        credentials = connection.credentials
+        if not credentials:
+            return None
+        
+        # Descriptografar se necessário
+        if isinstance(credentials, dict) and credentials.get('encrypted'):
+            try:
+                decrypted = decrypt_credentials(credentials['encrypted'])
+                return decrypted.get('api_key')
+            except Exception as e:
+                ai_logger.error(f"[AI] Erro ao descriptografar credenciais: {e}")
+                return None
+        
+        # Formato direto (não deveria acontecer em produção)
+        if isinstance(credentials, dict):
+            return credentials.get('api_key')
+        
+        return None
 

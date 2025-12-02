@@ -67,5 +67,9 @@ def create_app(config_class=Config):
     from app.routes import templates_routes
     app.register_blueprint(templates_routes.bp, name='legacy_templates')
     
+    # Rotas de IA (providers, models)
+    from app.routes import ai_routes
+    app.register_blueprint(ai_routes.ai_bp)
+    
     return app
 
