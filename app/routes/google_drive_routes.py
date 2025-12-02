@@ -19,20 +19,29 @@ def get_google_credentials(organization_id):
     """Obter credenciais Google para uma organização"""
     token = GoogleOAuthToken.query.filter_by(organization_id=organization_id).first()
     
-    if not token or token.is_expired():
+    if not token:
         return None
     
     try:
         creds_data = json.loads(token.access_token)
         creds = Credentials.from_authorized_user_info(creds_data)
         
-        # Refresh token se necessário
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            # Atualizar no banco
-            token.access_token = creds.to_json()
-            token.token_expiry = creds.expiry
-            db.session.commit()
+        # Se token expirou, tentar renovar usando refresh_token
+        if creds.expired or token.is_expired():
+            if creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    # Atualizar no banco após renovação bem-sucedida
+                    token.access_token = creds.to_json()
+                    token.token_expiry = creds.expiry
+                    db.session.commit()
+                except Exception as refresh_error:
+                    # Se renovação falhar, retornar None
+                    print(f"Error refreshing token: {refresh_error}")
+                    return None
+            else:
+                # Não há refresh_token para renovar
+                return None
         
         return creds
     except Exception as e:

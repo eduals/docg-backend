@@ -7,6 +7,7 @@ from flask import g
 from app.config import Config
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
 import os
@@ -146,34 +147,63 @@ def get_oauth_status():
         if not token:
             return jsonify({
                 'success': True,
-                'connected': False
+                'connected': False,
+                'email': None,
+                'scopes': []
             }), 200
         
-        # Verificar se token expirou
-        is_expired = token.is_expired()
-        
-        # Tentar obter email do usuário se token válido
+        # Tentar carregar credenciais e renovar se necessário
+        creds = None
+        is_connected = False
         email = None
-        if not is_expired:
-            try:
-                creds = Credentials.from_authorized_user_info(
-                    json.loads(token.access_token),
-                    SCOPES
-                )
-                service = build('oauth2', 'v2', credentials=creds)
-                user_info = service.userinfo().get().execute()
-                email = user_info.get('email')
-            except Exception:
-                pass
+        
+        try:
+            creds_data = json.loads(token.access_token)
+            creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+            
+            # Se token expirou, tentar renovar usando refresh_token
+            if creds.expired or token.is_expired():
+                if creds.refresh_token:
+                    try:
+                        creds.refresh(Request())
+                        # Atualizar no banco após renovação bem-sucedida
+                        token.access_token = creds.to_json()
+                        token.token_expiry = creds.expiry
+                        db.session.commit()
+                        is_connected = True
+                    except Exception as refresh_error:
+                        # Se renovação falhar, conexão está desconectada
+                        logger.warning(f"Error refreshing token: {refresh_error}")
+                        is_connected = False
+                else:
+                    # Não há refresh_token para renovar
+                    is_connected = False
+            else:
+                # Token ainda válido
+                is_connected = True
+            
+            # Tentar obter email do usuário se token válido
+            if is_connected:
+                try:
+                    service = build('oauth2', 'v2', credentials=creds)
+                    user_info = service.userinfo().get().execute()
+                    email = user_info.get('email')
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"Error getting credentials: {e}")
+            is_connected = False
         
         return jsonify({
             'success': True,
-            'connected': not is_expired,
+            'connected': is_connected,
             'email': email,
             'scopes': token.scope.split(',') if token.scope else []
         }), 200
         
     except Exception as e:
+        logger.error(f"Error in get_oauth_status: {e}")
         return jsonify({
             'error': 'Internal server error',
             'message': str(e)
