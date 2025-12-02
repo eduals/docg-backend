@@ -17,13 +17,14 @@ class HubSpotDataSource(BaseDataSource):
         self.access_token = connection.credentials.get('access_token') if connection.credentials else None
         self.portal_id = connection.config.get('portal_id') if connection.config else None
     
-    def get_object_data(self, object_type: str, object_id: str) -> Dict[str, Any]:
+    def get_object_data(self, object_type: str, object_id: str, additional_properties: List[str] = None) -> Dict[str, Any]:
         """
         Busca dados de um objeto específico do HubSpot.
         
         Args:
             object_type: Tipo do objeto (contacts, deals, companies, tickets, quotes, line_items)
             object_id: ID do objeto
+            additional_properties: Lista opcional de propriedades adicionais a buscar
         
         Returns:
             Dict com os dados do objeto, incluindo propriedades e associações
@@ -53,9 +54,24 @@ class HubSpotDataSource(BaseDataSource):
         
         url = f"{self.BASE_URL}/{endpoint}/{object_id}"
         
+        # Combinar propriedades padrão com adicionais
+        default_props = self._get_default_properties(object_type)
+        if additional_properties:
+            # Converter string de propriedades padrão em lista
+            default_props_list = default_props.split(',') if default_props != '*' else []
+            # Adicionar propriedades adicionais (removendo duplicatas)
+            all_properties = list(set(default_props_list + additional_properties))
+            # Se tinha '*', manter '*', senão juntar com vírgula
+            if default_props == '*':
+                properties_param = '*'
+            else:
+                properties_param = ','.join(all_properties)
+        else:
+            properties_param = default_props
+        
         # Buscar propriedades e associações
         params = {
-            'properties': self._get_default_properties(object_type),
+            'properties': properties_param,
             'associations': self._get_default_associations(object_type)
         }
         

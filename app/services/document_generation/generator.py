@@ -90,7 +90,8 @@ class DocumentGenerator:
         workflow: Workflow,
         source_data: Dict[str, Any],
         source_object_id: str,
-        user_id: str = None
+        user_id: str = None,
+        organization_id: Any = None
     ) -> GeneratedDocument:
         """
         Gera um documento a partir de um workflow configurado.
@@ -100,6 +101,7 @@ class DocumentGenerator:
             source_data: Dados da fonte (já buscados)
             source_object_id: ID do objeto na fonte
             user_id: ID do usuário que está gerando
+            organization_id: ID da organização (opcional, usa workflow.organization_id se não fornecido)
         
         Returns:
             GeneratedDocument criado
@@ -177,9 +179,13 @@ class DocumentGenerator:
                 mappings=mappings
             )
             
+            # Usar organization_id fornecido ou do workflow
+            # Isso garante consistência com o g.organization_id usado na query
+            doc_org_id = organization_id if organization_id is not None else workflow.organization_id
+            
             # Criar registro do documento gerado
             generated_doc = GeneratedDocument(
-                organization_id=workflow.organization_id,
+                organization_id=doc_org_id,
                 workflow_id=workflow.id,
                 source_connection_id=workflow.source_connection_id,
                 source_object_type=workflow.source_object_type,

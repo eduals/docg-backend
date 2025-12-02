@@ -263,9 +263,17 @@ def workflow_to_dict(workflow: Workflow, include_mappings: bool = False, include
 @require_org
 def list_ai_mappings(workflow_id):
     """Lista mapeamentos de IA de um workflow"""
+    import uuid
+    
+    # Converter workflow_id para UUID se for string
+    workflow_id_uuid = uuid.UUID(workflow_id) if isinstance(workflow_id, str) else workflow_id
+    
+    # Converter organization_id para UUID se for string
+    org_id = uuid.UUID(g.organization_id) if isinstance(g.organization_id, str) else g.organization_id
+    
     workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
+        id=workflow_id_uuid,
+        organization_id=org_id
     ).first_or_404()
     
     mappings = AIGenerationMapping.query.filter_by(

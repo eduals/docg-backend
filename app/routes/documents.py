@@ -9,6 +9,7 @@ from app.services.data_sources.hubspot import HubSpotDataSource
 from app.utils.auth import require_auth, require_org
 from app.routes.google_drive_routes import get_google_credentials
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 documents_bp = Blueprint('documents', __name__, url_prefix='/api/v1/documents')
@@ -19,7 +20,8 @@ documents_bp = Blueprint('documents', __name__, url_prefix='/api/v1/documents')
 @require_org
 def list_documents():
     """Lista documentos gerados da organização"""
-    org_id = g.organization_id
+    # Converter organization_id para UUID se for string
+    org_id = uuid.UUID(g.organization_id) if isinstance(g.organization_id, str) else g.organization_id
     
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
@@ -50,9 +52,11 @@ def list_documents():
 @require_org
 def get_document(document_id):
     """Retorna detalhes de um documento"""
+    # Converter organization_id para UUID se for string
+    org_id = uuid.UUID(g.organization_id) if isinstance(g.organization_id, str) else g.organization_id
     doc = GeneratedDocument.query.filter_by(
         id=document_id,
-        organization_id=g.organization_id
+        organization_id=org_id
     ).first_or_404()
     
     return jsonify(doc_to_dict(doc, include_details=True))
@@ -94,10 +98,20 @@ def generate_document():
             return jsonify({'error': 'Conexão de dados não configurada'}), 400
         
         if connection.source_type == 'hubspot':
+            # Extrair propriedades necessárias dos field_mappings
+            additional_properties = []
+            for mapping in workflow.field_mappings:
+                source_field = mapping.source_field
+                # Apenas propriedades diretas (sem dot notation) precisam ser incluídas
+                # Campos com dot notation (ex: associations.company.name) são acessados via associações
+                if source_field and '.' not in source_field:
+                    additional_properties.append(source_field)
+            
             data_source = HubSpotDataSource(connection)
             source_data = data_source.get_object_data(
                 workflow.source_object_type,
-                source_object_id
+                source_object_id,
+                additional_properties=additional_properties if additional_properties else None
             )
         else:
             return jsonify({'error': f'Fonte {connection.source_type} não suportada ainda'}), 400
@@ -106,6 +120,8 @@ def generate_document():
     try:
         # Obter credentials do Google usando organization_id
         organization_id = g.organization_id
+        # Converter organization_id para UUID se for string para garantir consistência
+        org_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
         
         google_creds = get_google_credentials(organization_id)
         if not google_creds:
@@ -116,7 +132,8 @@ def generate_document():
             workflow=workflow,
             source_data=source_data,
             source_object_id=source_object_id,
-            user_id=data.get('user_id')
+            user_id=data.get('user_id'),
+            organization_id=org_id_uuid
         )
         
         return jsonify({
@@ -134,14 +151,18 @@ def generate_document():
 @require_org
 def regenerate_document(document_id):
     """Regenera um documento existente"""
+    # Converter organization_id para UUID se for string
+    org_id = uuid.UUID(g.organization_id) if isinstance(g.organization_id, str) else g.organization_id
     doc = GeneratedDocument.query.filter_by(
         id=document_id,
-        organization_id=g.organization_id
+        organization_id=org_id
     ).first_or_404()
     
     # Usa os mesmos dados do documento original
     try:
         organization_id = g.organization_id
+        # Converter organization_id para UUID se for string para garantir consistência
+        org_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
         
         google_creds = get_google_credentials(organization_id)
         if not google_creds:
@@ -153,7 +174,8 @@ def regenerate_document(document_id):
             workflow=doc.workflow,
             source_data=doc.generated_data,
             source_object_id=doc.source_object_id,
-            user_id=request.get_json().get('user_id') if request.is_json else None
+            user_id=request.get_json().get('user_id') if request.is_json else None,
+            organization_id=org_id_uuid
         )
         
         return jsonify({
@@ -171,9 +193,11 @@ def regenerate_document(document_id):
 @require_org
 def delete_document(document_id):
     """Deleta um documento gerado"""
+    # Converter organization_id para UUID se for string
+    org_id = uuid.UUID(g.organization_id) if isinstance(g.organization_id, str) else g.organization_id
     doc = GeneratedDocument.query.filter_by(
         id=document_id,
-        organization_id=g.organization_id
+        organization_id=org_id
     ).first_or_404()
     
     # TODO: Opcionalmente deletar do Google Drive também
