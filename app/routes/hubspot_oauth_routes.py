@@ -20,7 +20,7 @@ def authorize():
     Retorna a URL para o usuário autorizar o app.
     """
     client_id = os.getenv('HUBSPOT_CLIENT_ID')
-    redirect_uri = os.getenv('HUBSPOT_REDIRECT_URI', 'http://localhost:5000/api/v1/hubspot-oauth/callback')
+    redirect_uri = os.getenv('HUBSPOT_REDIRECT_URI', 'https://hs-service.pipehub.co/api/v1/hubspot-oauth/callback')
     
     scopes = [
         'oauth',
@@ -42,10 +42,14 @@ def authorize():
     
     scope_string = ' '.join(scopes)
     
+    # URL-encode o redirect_uri para usar na URL
+    from urllib.parse import quote
+    encoded_redirect_uri = quote(redirect_uri, safe='')
+    
     auth_url = (
         f'https://app.hubspot.com/oauth/authorize'
         f'?client_id={client_id}'
-        f'&redirect_uri={redirect_uri}'
+        f'&redirect_uri={encoded_redirect_uri}'
         f'&scope={scope_string}'
     )
     
@@ -67,6 +71,10 @@ def oauth_callback():
         return jsonify({'error': 'Código de autorização não fornecido'}), 400
     
     try:
+        # IMPORTANTE: O redirect_uri deve ser EXATAMENTE o mesmo usado na autorização
+        # Usar o mesmo valor padrão do authorize
+        redirect_uri = os.getenv('HUBSPOT_REDIRECT_URI', 'https://hs-service.pipehub.co/api/v1/hubspot-oauth/callback')
+        
         # Trocar código por access token
         response = requests.post(
             'https://api.hubapi.com/oauth/v1/token',
@@ -74,14 +82,14 @@ def oauth_callback():
                 'grant_type': 'authorization_code',
                 'client_id': os.getenv('HUBSPOT_CLIENT_ID'),
                 'client_secret': os.getenv('HUBSPOT_CLIENT_SECRET'),
-                'redirect_uri': os.getenv('HUBSPOT_REDIRECT_URI'),
+                'redirect_uri': redirect_uri,  # NÃO URL-encoded aqui, deve ser o valor exato
                 'code': code
             }
         )
         
         if response.status_code != 200:
             logger.error(f'Erro ao trocar código por token: {response.text}')
-            return jsonify({'error': 'Erro ao obter token de acesso'}), 400
+            return jsonify({'error': 'Erro ao obter token de acesso', 'details': response.text}), 400
         
         token_data = response.json()
         access_token = token_data.get('access_token')
