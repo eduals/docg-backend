@@ -7,6 +7,7 @@ from app.models import (
 from app.services.document_generation import DocumentGenerator
 from app.services.data_sources.hubspot import HubSpotDataSource
 from app.utils.auth import require_auth, require_org
+from app.utils.hubspot_auth import flexible_hubspot_auth
 from app.routes.google_drive_routes import get_google_credentials
 import logging
 import uuid
@@ -16,7 +17,7 @@ documents_bp = Blueprint('documents', __name__, url_prefix='/api/v1/documents')
 
 
 @documents_bp.route('', methods=['GET'])
-@require_auth
+@flexible_hubspot_auth
 @require_org
 def list_documents():
     """Lista documentos gerados da organização"""
@@ -27,6 +28,8 @@ def list_documents():
     per_page = request.args.get('per_page', 20, type=int)
     status = request.args.get('status')
     workflow_id = request.args.get('workflow_id')
+    object_type = request.args.get('object_type')
+    object_id = request.args.get('object_id')
     
     query = GeneratedDocument.query.filter_by(organization_id=org_id)
     
@@ -34,6 +37,10 @@ def list_documents():
         query = query.filter_by(status=status)
     if workflow_id:
         query = query.filter_by(workflow_id=workflow_id)
+    if object_type:
+        query = query.filter_by(source_object_type=object_type)
+    if object_id:
+        query = query.filter_by(source_object_id=object_id)
     
     query = query.order_by(GeneratedDocument.created_at.desc())
     
@@ -63,7 +70,7 @@ def get_document(document_id):
 
 
 @documents_bp.route('/generate', methods=['POST'])
-@require_auth
+@flexible_hubspot_auth
 @require_org
 def generate_document():
     """

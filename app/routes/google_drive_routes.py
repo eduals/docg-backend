@@ -3,6 +3,7 @@ from app.database import db
 from app.models import GoogleOAuthToken, GoogleDriveConfig
 from app.auth import require_auth
 from app.utils.auth import require_org
+from app.utils.hubspot_auth import flexible_hubspot_auth
 from flask import g
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -50,6 +51,7 @@ def get_google_credentials(organization_id):
 
 
 @bp.route('/folders', methods=['GET'])
+@flexible_hubspot_auth
 @require_org
 def list_folders():
     """Listar pastas do Google Drive"""

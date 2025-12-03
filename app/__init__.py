@@ -59,6 +59,9 @@ def create_app(config_class=Config):
     from app.routes import google_drive_routes
     app.register_blueprint(google_drive_routes.bp)
     
+    from app.routes import settings
+    app.register_blueprint(settings.settings_bp)
+    
     # Rota RISC (Cross-Account Protection)
     from app.routes import risc_routes
     app.register_blueprint(risc_routes.bp)

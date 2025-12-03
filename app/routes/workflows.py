@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, g
 from app.database import db
 from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection
 from app.utils.auth import require_auth, require_org, require_admin
+from app.utils.hubspot_auth import flexible_hubspot_auth
 import logging
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def validate_post_actions(post_actions):
 
 
 @workflows_bp.route('', methods=['GET'])
-@require_auth
+@flexible_hubspot_auth
 @require_org
 def list_workflows():
     """Lista workflows da organização"""

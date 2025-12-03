@@ -3,6 +3,7 @@ from app.database import db
 from app.models import GoogleOAuthToken, GoogleDriveConfig, Organization, User
 from app.auth import require_auth
 from app.utils.auth import require_org
+from app.utils.hubspot_auth import flexible_hubspot_auth
 from flask import g
 from app.config import Config
 from google_auth_oauthlib.flow import Flow
@@ -211,7 +212,7 @@ def get_oauth_status():
 
 
 @bp.route('/authorize', methods=['GET'])
-@require_auth
+@flexible_hubspot_auth
 def authorize():
     """
     Iniciar fluxo OAuth com PKCE (Proof Key for Code Exchange).

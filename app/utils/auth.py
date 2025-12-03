@@ -8,9 +8,14 @@ import uuid
 def require_auth(f):
     """Decorator para exigir autenticação Bearer token
     Aceita token no header Authorization ou no query parameter Authorization
+    Se g.token já estiver definido (por outro middleware), pula a validação
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Se já foi autenticado por outro middleware (ex: flexible_hubspot_auth), pular validação
+        if hasattr(g, 'token') and g.token:
+            return f(*args, **kwargs)
+        
         # Tentar obter do header primeiro (prioridade)
         auth_value = request.headers.get('Authorization')
         
