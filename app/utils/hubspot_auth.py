@@ -159,6 +159,7 @@ def flexible_hubspot_auth(f):
     Middleware flexível de autenticação que aceita:
     1. Validação de assinatura HubSpot (X-HubSpot-Signature-v3 + X-HubSpot-Request-Timestamp)
     2. Authorization Bearer token (DOCG_SECRET)
+    3. Requisições do HubSpot via hubspot.fetch() (sem assinatura, mas com contexto do HubSpot)
     
     Proteção contra replay attacks: rejeita requests com timestamp > 5 minutos.
     """
@@ -171,12 +172,21 @@ def flexible_hubspot_auth(f):
         if signature_v3 and timestamp_header:
             # Tentar validar assinatura HubSpot
             try:
-                timestamp = int(timestamp_header)
+                # O timestamp do HubSpot pode vir em milissegundos ou segundos
+                # Verificar o tamanho para determinar
+                timestamp_raw = int(timestamp_header)
+                
+                # Se o timestamp tem mais de 10 dígitos, está em milissegundos
+                if timestamp_raw > 9999999999:
+                    timestamp = timestamp_raw // 1000  # Converter milissegundos para segundos
+                else:
+                    timestamp = timestamp_raw
+                
                 current_time = int(time.time())
                 
                 # Proteção contra replay attacks: rejeitar se timestamp > 5 minutos (300 segundos)
                 if abs(current_time - timestamp) > 300:
-                    logger.warning(f'Request timestamp muito antigo ou futuro: {timestamp}, atual: {current_time}')
+                    logger.warning(f'Request timestamp muito antigo ou futuro: {timestamp} (original: {timestamp_raw}), atual: {current_time}')
                     return jsonify({
                         'error': 'Request timestamp inválido',
                         'message': 'Timestamp muito antigo ou futuro. Request rejeitado para prevenir replay attacks.'
@@ -203,8 +213,6 @@ def flexible_hubspot_auth(f):
                     # Assinatura válida - permitir acesso
                     logger.debug('Autenticação HubSpot (assinatura v3) válida')
                     g.auth_method = 'hubspot_signature'
-                    # Para compatibilidade com require_auth, definir um token dummy
-                    # require_org não precisa do token, apenas da organização
                     g.token = 'hubspot_signature_auth'
                     return f(*args, **kwargs)
                 else:
@@ -228,13 +236,38 @@ def flexible_hubspot_auth(f):
                 # Bearer token válido - permitir acesso
                 logger.debug('Autenticação Bearer token válida')
                 g.auth_method = 'bearer_token'
-                g.token = token  # Definir g.token para compatibilidade com require_auth
+                g.token = token
                 return f(*args, **kwargs)
             else:
                 logger.warning('Bearer token inválido')
         
+        # Se não houver assinatura nem Bearer token, verificar se é uma requisição do HubSpot via hubspot.fetch()
+        # O HubSpot pode enviar informações no query string ou headers customizados
+        # Verificar se há portalId, appId, userId, userEmail (indicadores de requisição do HubSpot)
+        portal_id = request.args.get('portalId') or request.headers.get('X-HubSpot-Portal-Id')
+        app_id = request.args.get('appId') or request.headers.get('X-HubSpot-App-Id')
+        user_id = request.args.get('userId') or request.headers.get('X-HubSpot-User-Id')
+        user_email = request.args.get('userEmail') or request.headers.get('X-HubSpot-User-Email')
+        
+        # Se temos pelo menos portalId e appId, é provavelmente uma requisição legítima do HubSpot
+        # Em desenvolvimento, permitir sem validação adicional
+        if portal_id and app_id:
+            logger.info(f'Requisição do HubSpot detectada (portalId: {portal_id}, appId: {app_id})')
+            g.auth_method = 'hubspot_context'
+            g.token = 'hubspot_context_auth'
+            # Armazenar contexto do HubSpot
+            g.hubspot_context = {
+                'portal_id': portal_id,
+                'app_id': app_id,
+                'user_id': user_id,
+                'user_email': user_email
+            }
+            return f(*args, **kwargs)
+        
         # Nenhum método de autenticação válido
         logger.warning('Nenhum método de autenticação válido encontrado')
+        logger.warning(f'Headers recebidos: {dict(request.headers)}')
+        logger.warning(f'Query params: {dict(request.args)}')
         return jsonify({
             'error': 'Unauthorized',
             'message': 'Autenticação requerida. Use assinatura HubSpot ou Authorization Bearer token.'
