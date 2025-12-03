@@ -157,15 +157,37 @@ def verify_hubspot_signature(f):
 def flexible_hubspot_auth(f):
     """
     Middleware flexível de autenticação que aceita:
-    1. Validação de assinatura HubSpot (X-HubSpot-Signature-v3 + X-HubSpot-Request-Timestamp)
-    2. Authorization Bearer token (DOCG_SECRET)
-    3. Requisições do HubSpot via hubspot.fetch() (sem assinatura, mas com contexto do HubSpot)
+    1. Requisições do HubSpot via hubspot.fetch() (com portalId/appId - verificar PRIMEIRO)
+    2. Validação de assinatura HubSpot (X-HubSpot-Signature-v3 + X-HubSpot-Request-Timestamp)
+    3. Authorization Bearer token (DOCG_SECRET)
     
     Proteção contra replay attacks: rejeita requests com timestamp > 5 minutos.
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Verificar primeiro se há assinatura HubSpot (v3)
+        # PRIMEIRO: Verificar se é uma requisição do HubSpot via hubspot.fetch()
+        # O HubSpot envia portalId e appId na query string quando usa hubspot.fetch()
+        portal_id = request.args.get('portalId') or request.headers.get('X-HubSpot-Portal-Id')
+        app_id = request.args.get('appId') or request.headers.get('X-HubSpot-App-Id')
+        user_id = request.args.get('userId') or request.headers.get('X-HubSpot-User-Id')
+        user_email = request.args.get('userEmail') or request.headers.get('X-HubSpot-User-Email')
+        
+        # Se temos portalId e appId, é uma requisição legítima do HubSpot via hubspot.fetch()
+        # Aceitar imediatamente sem validar assinatura (hubspot.fetch() não envia assinatura válida)
+        if portal_id and app_id:
+            logger.info(f'Requisição do HubSpot via hubspot.fetch() detectada (portalId: {portal_id}, appId: {app_id})')
+            g.auth_method = 'hubspot_context'
+            g.token = 'hubspot_context_auth'
+            # Armazenar contexto do HubSpot
+            g.hubspot_context = {
+                'portal_id': portal_id,
+                'app_id': app_id,
+                'user_id': user_id,
+                'user_email': user_email
+            }
+            return f(*args, **kwargs)
+        
+        # SEGUNDO: Verificar assinatura HubSpot (v3) - para webhooks e outras requisições assinadas
         signature_v3 = request.headers.get('X-HubSpot-Signature-v3')
         timestamp_header = request.headers.get('X-HubSpot-Request-Timestamp')
         
@@ -173,7 +195,6 @@ def flexible_hubspot_auth(f):
             # Tentar validar assinatura HubSpot
             try:
                 # O timestamp do HubSpot pode vir em milissegundos ou segundos
-                # Verificar o tamanho para determinar
                 timestamp_raw = int(timestamp_header)
                 
                 # Se o timestamp tem mais de 10 dígitos, está em milissegundos
@@ -216,12 +237,12 @@ def flexible_hubspot_auth(f):
                     g.token = 'hubspot_signature_auth'
                     return f(*args, **kwargs)
                 else:
-                    logger.warning('Assinatura HubSpot v3 inválida')
+                    logger.warning('Assinatura HubSpot v3 inválida - continuando para verificar outros métodos')
             except (ValueError, TypeError) as e:
                 logger.warning(f'Erro ao validar timestamp HubSpot: {str(e)}')
                 # Continuar para verificar Bearer token
         
-        # Se não houver assinatura HubSpot válida, verificar Bearer token
+        # TERCEIRO: Verificar Bearer token
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header.replace('Bearer ', '').strip()
@@ -240,29 +261,6 @@ def flexible_hubspot_auth(f):
                 return f(*args, **kwargs)
             else:
                 logger.warning('Bearer token inválido')
-        
-        # Se não houver assinatura nem Bearer token, verificar se é uma requisição do HubSpot via hubspot.fetch()
-        # O HubSpot pode enviar informações no query string ou headers customizados
-        # Verificar se há portalId, appId, userId, userEmail (indicadores de requisição do HubSpot)
-        portal_id = request.args.get('portalId') or request.headers.get('X-HubSpot-Portal-Id')
-        app_id = request.args.get('appId') or request.headers.get('X-HubSpot-App-Id')
-        user_id = request.args.get('userId') or request.headers.get('X-HubSpot-User-Id')
-        user_email = request.args.get('userEmail') or request.headers.get('X-HubSpot-User-Email')
-        
-        # Se temos pelo menos portalId e appId, é provavelmente uma requisição legítima do HubSpot
-        # Em desenvolvimento, permitir sem validação adicional
-        if portal_id and app_id:
-            logger.info(f'Requisição do HubSpot detectada (portalId: {portal_id}, appId: {app_id})')
-            g.auth_method = 'hubspot_context'
-            g.token = 'hubspot_context_auth'
-            # Armazenar contexto do HubSpot
-            g.hubspot_context = {
-                'portal_id': portal_id,
-                'app_id': app_id,
-                'user_id': user_id,
-                'user_email': user_email
-            }
-            return f(*args, **kwargs)
         
         # Nenhum método de autenticação válido
         logger.warning('Nenhum método de autenticação válido encontrado')

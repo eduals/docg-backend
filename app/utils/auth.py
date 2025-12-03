@@ -83,12 +83,15 @@ def require_org(f):
             elif request.is_json and request.get_json():
                 organization_id = request.get_json().get('organization_id')
         
-        # 2. Via portal_id (compatibilidade com código antigo)
+        # 4. Via portal_id (compatibilidade com código antigo)
+        # Aceitar tanto portal_id (underscore) quanto portalId (camelCase)
         portal_id = None
         if request.args.get('portal_id'):
             portal_id = request.args.get('portal_id')
+        elif request.args.get('portalId'):  # Adicionar suporte para camelCase
+            portal_id = request.args.get('portalId')
         elif request.is_json and request.get_json():
-            portal_id = request.get_json().get('portal_id')
+            portal_id = request.get_json().get('portal_id') or request.get_json().get('portalId')
         
         if portal_id:
             # Buscar organização pelo portal_id (via connection)
@@ -97,7 +100,7 @@ def require_org(f):
             if org_id:
                 organization_id = str(org_id)
         
-        # 3. Se ainda não encontrou e tem portal_id, retornar erro (não criar automaticamente)
+        # 5. Se ainda não encontrou e tem portal_id, retornar erro (não criar automaticamente)
         # A organização deve ser criada explicitamente via migração ou endpoint
         if not organization_id and portal_id:
             return jsonify({
