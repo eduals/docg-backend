@@ -74,6 +74,10 @@ def create_app(config_class=Config):
     from app.routes import ai_routes
     app.register_blueprint(ai_routes.ai_bp)
     
+    # Rotas de provedores de assinatura
+    from app.routes import signature_providers
+    app.register_blueprint(signature_providers.signature_providers_bp)
+    
     # Rotas do HubSpot
     from app.routes import hubspot_oauth_routes
     app.register_blueprint(hubspot_oauth_routes.hubspot_oauth_bp)

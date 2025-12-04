@@ -36,14 +36,19 @@ class EnvelopeCreationService:
             source_type='clicksign'
         ).first()
         
-        if not connection or not connection.credentials:
+        if not connection:
             raise Exception("ClickSign API key not configured for this organization")
         
-        clicksign_api_key = connection.credentials.get('clicksign_api_key')
-        if not clicksign_api_key:
+        # Descriptografar credenciais
+        credentials = connection.get_decrypted_credentials()
+        
+        # Buscar api_key (suporta tanto 'api_key' quanto 'clicksign_api_key' para compatibilidade)
+        api_key = credentials.get('api_key') or credentials.get('clicksign_api_key')
+        
+        if not api_key:
             raise Exception("ClickSign API key not configured for this organization")
         
-        return clicksign_api_key
+        return api_key
     
     def update_log(self, step_name, status, message=None, error_message=None, envelope_id=None):
         """Atualizar log de execução"""
