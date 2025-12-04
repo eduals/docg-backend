@@ -80,8 +80,10 @@ def require_org(f):
         if not organization_id:
             if request.args.get('organization_id'):
                 organization_id = request.args.get('organization_id')
-            elif request.is_json and request.get_json():
-                organization_id = request.get_json().get('organization_id')
+            elif request.is_json:
+                json_data = request.get_json(silent=True)
+                if json_data:
+                    organization_id = json_data.get('organization_id')
         
         # 4. Via portal_id (compatibilidade com código antigo)
         # Aceitar tanto portal_id (underscore) quanto portalId (camelCase)
@@ -90,8 +92,10 @@ def require_org(f):
             portal_id = request.args.get('portal_id')
         elif request.args.get('portalId'):  # Adicionar suporte para camelCase
             portal_id = request.args.get('portalId')
-        elif request.is_json and request.get_json():
-            portal_id = request.get_json().get('portal_id') or request.get_json().get('portalId')
+        elif request.is_json:
+            json_data = request.get_json(silent=True)
+            if json_data:
+                portal_id = json_data.get('portal_id') or json_data.get('portalId')
         
         if portal_id:
             # Buscar organização pelo portal_id (via connection)
@@ -100,13 +104,39 @@ def require_org(f):
             if org_id:
                 organization_id = str(org_id)
         
-        # 5. Se ainda não encontrou e tem portal_id, retornar erro (não criar automaticamente)
-        # A organização deve ser criada explicitamente via migração ou endpoint
+        # 5. Se ainda não encontrou e tem portal_id, criar automaticamente se for requisição do HubSpot
         if not organization_id and portal_id:
-            return jsonify({
-                'error': 'Organization not found',
-                'message': f'Organização não encontrada para portal_id {portal_id}. Execute a migração de dados primeiro.'
-            }), 404
+            # Verificar se é uma requisição do HubSpot (com appId e userEmail)
+            app_id = request.args.get('appId') or request.args.get('app_id')
+            user_email = request.args.get('userEmail') or request.args.get('user_email')
+            user_id = request.args.get('userId') or request.args.get('user_id')
+            
+            # Se temos appId e userEmail, é uma requisição legítima do HubSpot - criar automaticamente
+            if app_id and user_email:
+                from app.utils.helpers import create_organization_from_hubspot_context
+                try:
+                    org_id = create_organization_from_hubspot_context(
+                        portal_id=portal_id,
+                        user_email=user_email,
+                        user_id=user_id,
+                        app_id=app_id
+                    )
+                    organization_id = str(org_id)
+                except Exception as e:
+                    # Log do erro mas retornar erro 500
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Erro ao criar organização automaticamente: {str(e)}")
+                    return jsonify({
+                        'error': 'Internal server error',
+                        'message': f'Erro ao criar organização: {str(e)}'
+                    }), 500
+            else:
+                # Não é requisição do HubSpot - retornar erro
+                return jsonify({
+                    'error': 'Organization not found',
+                    'message': f'Organização não encontrada para portal_id {portal_id}. Execute a migração de dados primeiro.'
+                }), 404
         
         if not organization_id:
             return jsonify({
@@ -139,8 +169,10 @@ def require_admin(f):
         user_id = None
         if request.args.get('user_id'):
             user_id = request.args.get('user_id')
-        elif request.is_json and request.get_json():
-            user_id = request.get_json().get('user_id')
+        elif request.is_json:
+            json_data = request.get_json(silent=True)
+            if json_data:
+                user_id = json_data.get('user_id')
         
         # Se não tem user_id, permitir (para compatibilidade)
         if not user_id:
