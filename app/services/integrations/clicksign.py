@@ -1,5 +1,5 @@
 from typing import Dict, Any, List
-from app.models import GeneratedDocument, SignatureRequest, OrganizationFeature
+from app.models import GeneratedDocument, SignatureRequest, DataSourceConnection
 from app.database import db
 import requests
 import logging
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class ClickSignIntegration(BaseIntegration):
     """
     Integração com ClickSign para assinatura de documentos.
-    Esta é uma FEATURE OPCIONAL, não o produto principal.
+    Usa DataSourceConnection para gerenciar credenciais.
     """
     
     BASE_URL = "https://sandbox.clicksign.com/api/v3"
@@ -20,18 +20,25 @@ class ClickSignIntegration(BaseIntegration):
         self._load_config()
     
     def _load_config(self):
-        """Carrega configuração da feature para a organização"""
-        feature = OrganizationFeature.query.filter_by(
+        """Carrega configuração da conexão ClickSign para a organização"""
+        connection = DataSourceConnection.query.filter_by(
             organization_id=self.organization_id,
-            feature_name='clicksign'
+            source_type='clicksign',
+            status='active'
         ).first()
         
-        if not feature or not feature.enabled:
-            raise Exception('ClickSign não está habilitado para esta organização')
+        if not connection:
+            raise Exception('ClickSign não está configurado para esta organização. Crie uma conexão primeiro.')
         
-        self.api_key = feature.config.get('api_key') if feature.config else None
+        # Descriptografar credenciais
+        credentials = connection.get_decrypted_credentials()
+        
+        # Buscar api_key das credenciais descriptografadas
+        # Suporta tanto 'api_key' (novo formato) quanto 'clicksign_api_key' (legado)
+        self.api_key = credentials.get('api_key') or credentials.get('clicksign_api_key')
+        
         if not self.api_key:
-            raise Exception('API Key do ClickSign não configurada')
+            raise Exception('API Key do ClickSign não configurada na conexão')
     
     def send_document_for_signature(
         self,

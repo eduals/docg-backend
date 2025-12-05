@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, g
 from app.database import db
-from app.models import GoogleDriveConfig, GoogleOAuthToken, OrganizationFeature
+from app.models import GoogleDriveConfig, GoogleOAuthToken, DataSourceConnection
 from app.utils.hubspot_auth import flexible_hubspot_auth
 from app.utils.auth import require_org
 from google.oauth2.credentials import Credentials
@@ -71,12 +71,12 @@ def get_settings():
         
         # Verificar status do ClickSign
         clicksign_status = 'not_configured'
-        clicksign_feature = OrganizationFeature.query.filter_by(
+        clicksign_connection = DataSourceConnection.query.filter_by(
             organization_id=organization_id,
-            feature_name='clicksign'
+            source_type='clicksign'
         ).first()
-        if clicksign_feature:
-            clicksign_status = 'connected' if clicksign_feature.enabled else 'disconnected'
+        if clicksign_connection:
+            clicksign_status = 'connected' if clicksign_connection.status == 'active' else 'disconnected'
         
         # Montar settings
         settings = {

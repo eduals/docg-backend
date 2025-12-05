@@ -30,6 +30,13 @@ class DataSourceConnection(db.Model):
     def access_token(self):
         return self.credentials.get('access_token') if self.credentials else None
     
+    def get_decrypted_credentials(self):
+        """Retorna credenciais descriptografadas"""
+        if not self.credentials or not self.credentials.get('encrypted'):
+            return {}
+        from app.utils.encryption import decrypt_credentials
+        return decrypt_credentials(self.credentials['encrypted'])
+    
     def to_dict(self, include_credentials=False):
         result = {
             'id': str(self.id),
