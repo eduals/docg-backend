@@ -29,6 +29,21 @@ class EnvelopeCreationService:
         self.execution_id = execution_id
         self.envelope_id = None
         
+    def get_portal_id(self):
+        """Obter portal_id do HubSpot da organização via DataSourceConnection"""
+        connection = DataSourceConnection.query.filter_by(
+            organization_id=self.organization_id,
+            source_type='hubspot'
+        ).first()
+        
+        if connection and connection.config:
+            portal_id = connection.config.get('portal_id')
+            if portal_id:
+                return str(portal_id)
+        
+        # Fallback: usar organization_id como portal_id se não encontrar conexão HubSpot
+        return str(self.organization_id)
+        
     def get_clicksign_token(self):
         """Obter token ClickSign da organização via DataSourceConnection"""
         connection = DataSourceConnection.query.filter_by(
@@ -36,14 +51,19 @@ class EnvelopeCreationService:
             source_type='clicksign'
         ).first()
         
-        if not connection or not connection.credentials:
+        if not connection:
             raise Exception("ClickSign API key not configured for this organization")
         
-        clicksign_api_key = connection.credentials.get('clicksign_api_key')
-        if not clicksign_api_key:
+        # Descriptografar credenciais
+        credentials = connection.get_decrypted_credentials()
+        
+        # Buscar api_key (suporta tanto 'api_key' quanto 'clicksign_api_key' para compatibilidade)
+        api_key = credentials.get('api_key') or credentials.get('clicksign_api_key')
+        
+        if not api_key:
             raise Exception("ClickSign API key not configured for this organization")
         
-        return clicksign_api_key
+        return api_key
     
     def update_log(self, step_name, status, message=None, error_message=None, envelope_id=None):
         """Atualizar log de execução"""
@@ -99,7 +119,7 @@ class EnvelopeCreationService:
             
             # Salvar relação no banco
             relation = EnvelopeRelation(
-                portal_id=self.portal_id,
+                portal_id=self.get_portal_id(),
                 hubspot_object_type="",  # Será atualizado depois
                 hubspot_object_id="",  # Será atualizado depois
                 clicksign_envelope_id=self.envelope_id,
@@ -286,7 +306,7 @@ class EnvelopeCreationService:
             
             # Buscar mapeamentos ativos
             mappings = FieldMapping.query.filter_by(
-                portal_id=self.portal_id,
+                portal_id=self.get_portal_id(),
                 object_type=hubspot_object_type,
                 is_active=True
             ).all()
