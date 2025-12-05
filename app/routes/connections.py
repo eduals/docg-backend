@@ -219,6 +219,7 @@ def delete_connection(connection_id):
 # ==================== AI CONNECTION ENDPOINTS ====================
 
 @connections_bp.route('/ai', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -286,6 +287,7 @@ def create_ai_connection():
 
 
 @connections_bp.route('/ai', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def list_ai_connections():
@@ -302,6 +304,7 @@ def list_ai_connections():
 
 
 @connections_bp.route('/ai/<connection_id>', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def get_ai_connection(connection_id):
@@ -318,6 +321,7 @@ def get_ai_connection(connection_id):
 
 
 @connections_bp.route('/ai/<connection_id>', methods=['PATCH'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -358,6 +362,7 @@ def update_ai_connection(connection_id):
 
 
 @connections_bp.route('/ai/<connection_id>', methods=['DELETE'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -389,6 +394,7 @@ def delete_ai_connection(connection_id):
 
 
 @connections_bp.route('/ai/<connection_id>/test', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def test_ai_connection(connection_id):
@@ -457,6 +463,7 @@ def test_ai_connection(connection_id):
 # ==================== SIGNATURE CONNECTION ENDPOINTS ====================
 
 @connections_bp.route('/signature', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -524,6 +531,7 @@ def create_signature_connection():
 
 
 @connections_bp.route('/signature', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def list_signature_connections():
@@ -539,6 +547,7 @@ def list_signature_connections():
 
 
 @connections_bp.route('/signature/<connection_id>', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def get_signature_connection(connection_id):
@@ -555,6 +564,7 @@ def get_signature_connection(connection_id):
 
 
 @connections_bp.route('/signature/<connection_id>', methods=['PATCH'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -595,6 +605,7 @@ def update_signature_connection(connection_id):
 
 
 @connections_bp.route('/signature/<connection_id>', methods=['DELETE'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -627,6 +638,7 @@ def delete_signature_connection(connection_id):
 
 
 @connections_bp.route('/signature/<connection_id>/test', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def test_signature_connection(connection_id):

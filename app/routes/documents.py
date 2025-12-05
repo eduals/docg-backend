@@ -55,6 +55,7 @@ def list_documents():
 
 
 @documents_bp.route('/<document_id>', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def get_document(document_id):
@@ -154,6 +155,7 @@ def generate_document():
 
 
 @documents_bp.route('/<document_id>/regenerate', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def regenerate_document(document_id):
@@ -196,6 +198,7 @@ def regenerate_document(document_id):
 
 
 @documents_bp.route('/<document_id>', methods=['DELETE'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def delete_document(document_id):

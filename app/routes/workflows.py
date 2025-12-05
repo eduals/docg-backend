@@ -71,6 +71,7 @@ def list_workflows():
 
 
 @workflows_bp.route('/<workflow_id>', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def get_workflow(workflow_id):
@@ -84,6 +85,7 @@ def get_workflow(workflow_id):
 
 
 @workflows_bp.route('', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -166,6 +168,7 @@ def create_workflow():
 
 
 @workflows_bp.route('/<workflow_id>', methods=['PUT'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -221,6 +224,7 @@ def update_workflow(workflow_id):
 
 
 @workflows_bp.route('/<workflow_id>', methods=['DELETE'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -238,6 +242,7 @@ def delete_workflow(workflow_id):
 
 
 @workflows_bp.route('/<workflow_id>/activate', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -311,6 +316,7 @@ def workflow_to_dict(workflow: Workflow, include_mappings: bool = False, include
 # ==================== AI MAPPING ENDPOINTS ====================
 
 @workflows_bp.route('/<workflow_id>/ai-mappings', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def list_ai_mappings(workflow_id):
@@ -338,6 +344,7 @@ def list_ai_mappings(workflow_id):
 
 
 @workflows_bp.route('/<workflow_id>/ai-mappings', methods=['POST'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -428,6 +435,7 @@ def create_ai_mapping(workflow_id):
 
 
 @workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['GET'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 def get_ai_mapping(workflow_id, mapping_id):
@@ -446,6 +454,7 @@ def get_ai_mapping(workflow_id, mapping_id):
 
 
 @workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['PATCH'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
@@ -524,6 +533,7 @@ def update_ai_mapping(workflow_id, mapping_id):
 
 
 @workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['DELETE'])
+@flexible_hubspot_auth
 @require_auth
 @require_org
 @require_admin
