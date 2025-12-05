@@ -13,6 +13,7 @@ from app.services.ai.utils import (
     PROVIDER_MODELS,
     PROVIDER_NAMES
 )
+from app.utils.auth import flexible_hubspot_auth
 
 ai_bp = Blueprint('ai', __name__, url_prefix='/api/v1/ai')
 
