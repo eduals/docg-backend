@@ -18,7 +18,7 @@ ai_bp = Blueprint('ai', __name__, url_prefix='/api/v1/ai')
 
 
 @ai_bp.route('/providers', methods=['GET'])
-@require_auth
+@flexible_hubspot_auth
 def list_providers():
     """
     Lista provedores de IA disponíveis com seus modelos.
@@ -47,7 +47,7 @@ def list_providers():
 
 
 @ai_bp.route('/providers/<provider>/models', methods=['GET'])
-@require_auth
+@flexible_hubspot_auth
 def list_provider_models(provider):
     """
     Lista modelos disponíveis de um provedor específico.
@@ -67,7 +67,7 @@ def list_provider_models(provider):
 
 
 @ai_bp.route('/providers/<provider>', methods=['GET'])
-@require_auth
+@flexible_hubspot_auth
 def get_provider_info(provider):
     """
     Retorna informações detalhadas de um provedor.
