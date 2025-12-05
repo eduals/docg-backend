@@ -54,5 +54,3 @@ Thumbs.db
 
 # Migrations (manter estrutura, ignorar versões compiladas)
 migrations/versions/*.pyc
-
-postman/collection.json
