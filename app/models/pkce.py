@@ -7,6 +7,7 @@ class PKCEVerifier(db.Model):
     
     state = db.Column(db.String(255), primary_key=True, nullable=False, index=True)
     code_verifier = db.Column(db.Text, nullable=False)
+    frontend_redirect_uri = db.Column(db.String(500), nullable=True)  # Para redirecionar frontend após callback
     expires_at = db.Column(db.DateTime, nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     

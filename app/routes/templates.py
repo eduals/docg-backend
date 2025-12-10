@@ -104,12 +104,78 @@ def create_template():
     }), 201
 
 
-@templates_bp.route('/<template_id>/sync-tags', methods=['POST'])
+@templates_bp.route('/<template_id>/tags', methods=['GET'])
+@require_auth
+@require_org
+def get_template_tags(template_id):
+    """
+    Retorna tags detectadas no template.
+    
+    Retorna tags no formato:
+    {
+        "tags": [
+            {
+                "tag": "{{deal.dealname}}",
+                "type": "hubspot",
+                "object_type": "deal",
+                "property": "dealname"
+            },
+            {
+                "tag": "{{ai:summary}}",
+                "type": "ai",
+                "ai_tag": "summary"
+            }
+        ]
+    }
+    """
+    template = Template.query.filter_by(
+        id=template_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    from app.services.document_generation.tag_processor import TagProcessor
+    
+    detected_tags = template.detected_tags or []
+    
+    # Processar tags para formato estruturado
+    tags = []
+    for tag_str in detected_tags:
+        tag_info = {
+            'tag': f'{{{{{tag_str}}}}}',
+            'type': 'hubspot',
+            'object_type': None,
+            'property': None
+        }
+        
+        # Verificar se é tag AI
+        if tag_str.startswith('ai:'):
+            tag_info['type'] = 'ai'
+            tag_info['ai_tag'] = tag_str.replace('ai:', '')
+        else:
+            # Tentar extrair object_type e property
+            parts = tag_str.split('.')
+            if len(parts) >= 2:
+                tag_info['object_type'] = parts[0]
+                tag_info['property'] = '.'.join(parts[1:])
+            else:
+                tag_info['property'] = tag_str
+        
+        tags.append(tag_info)
+    
+    return jsonify({
+        'tags': tags
+    })
+
+
+@templates_bp.route('/<template_id>/sync', methods=['POST'])
 @require_auth
 @require_org
 @require_admin
-def sync_template_tags(template_id):
-    """Re-analisa o template e atualiza as tags detectadas"""
+def sync_template(template_id):
+    """
+    Sincroniza template do Google Drive.
+    Re-analisa o template e atualiza as tags detectadas.
+    """
     template = Template.query.filter_by(
         id=template_id,
         organization_id=g.organization_id
@@ -124,20 +190,38 @@ def sync_template_tags(template_id):
         
         docs_service = GoogleDocsService(google_creds)
         
+        # Extrair tags do documento
         detected_tags = docs_service.extract_tags_from_document(template.google_file_id)
+        
+        # Extrair tags AI também
+        from app.services.document_generation.tag_processor import TagProcessor
+        # Buscar conteúdo do documento para extrair tags AI
+        # Por enquanto, vamos apenas atualizar as tags normais
+        # TODO: Extrair tags AI do conteúdo do documento
         
         template.detected_tags = detected_tags
         template.version += 1
+        template.last_synced_at = db.func.now()
         db.session.commit()
         
         return jsonify({
             'success': True,
-            'detected_tags': detected_tags
+            'detected_tags': detected_tags,
+            'version': template.version
         })
         
     except Exception as e:
-        logger.error(f"Erro ao sincronizar tags: {str(e)}")
+        logger.error(f"Erro ao sincronizar template: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+
+@templates_bp.route('/<template_id>/sync-tags', methods=['POST'])
+@require_auth
+@require_org
+@require_admin
+def sync_template_tags(template_id):
+    """Alias para /sync (mantido para compatibilidade)"""
+    return sync_template(template_id)
 
 
 @templates_bp.route('/<template_id>', methods=['DELETE'])

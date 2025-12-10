@@ -69,8 +69,8 @@ def execute_workflow_action():
     
     try:
         # Importar serviços necessários
-        from app.models import Workflow
-        from app.services.document_generation.generator import DocumentGenerator
+        from app.models import Workflow, WorkflowNode, GeneratedDocument
+        from app.services.workflow_executor import WorkflowExecutor
         
         # Buscar workflow no banco
         workflow = Workflow.query.get(workflow_id)
@@ -87,14 +87,73 @@ def execute_workflow_action():
                 }
             })
         
-        # Gerar documento
-        generator = DocumentGenerator()
-        result = generator.generate_document(
-            workflow_id=workflow.id,
-            source_object_id=hubspot_object_id,
-            source_object_type=hubspot_object_type,
-            include_line_items=include_line_items
-        )
+        # Verificar se workflow tem nodes configurados
+        nodes_count = WorkflowNode.query.filter_by(workflow_id=workflow.id).count()
+        
+        if nodes_count > 0:
+            # Usar WorkflowExecutor (nova estrutura com nodes)
+            executor = WorkflowExecutor()
+            execution = executor.execute_workflow(
+                workflow=workflow,
+                source_object_id=hubspot_object_id,
+                source_object_type=hubspot_object_type
+            )
+            
+            # Buscar documento gerado
+            if execution.generated_document_id:
+                doc = GeneratedDocument.query.get(execution.generated_document_id)
+                result = {
+                    'document_id': str(doc.id),
+                    'document_url': doc.google_doc_url,
+                    'pdf_url': doc.pdf_url,
+                    'document_name': doc.name
+                }
+            else:
+                raise Exception('Documento não foi gerado durante a execução')
+        else:
+            # Método legado (sem nodes) - manter compatibilidade
+            from app.services.document_generation.generator import DocumentGenerator
+            from app.routes.google_drive_routes import get_google_credentials
+            from app.utils.helpers import get_organization_id_from_portal_id
+            
+            # Buscar organization_id do portal
+            org_id = get_organization_id_from_portal_id(portal_id)
+            if not org_id:
+                raise Exception('Organização não encontrada para o portal')
+            
+            google_creds = get_google_credentials(org_id)
+            if not google_creds:
+                raise Exception('Credenciais do Google não configuradas')
+            
+            # Buscar dados do objeto
+            from app.models import DataSourceConnection
+            from app.services.data_sources.hubspot import HubSpotDataSource
+            
+            connection = workflow.source_connection
+            if not connection:
+                raise Exception('Conexão de dados não configurada no workflow')
+            
+            data_source = HubSpotDataSource(connection)
+            source_data = data_source.get_object_data(
+                hubspot_object_type,
+                hubspot_object_id
+            )
+            
+            generator = DocumentGenerator(google_creds)
+            doc = generator.generate_from_workflow(
+                workflow=workflow,
+                source_data=source_data,
+                source_object_id=hubspot_object_id,
+                user_id=None,
+                organization_id=org_id
+            )
+            
+            result = {
+                'document_id': str(doc.id),
+                'document_url': doc.google_doc_url,
+                'pdf_url': doc.pdf_url,
+                'document_name': doc.name
+            }
         
         execution_time = int((time.time() - start_time) * 1000)
         

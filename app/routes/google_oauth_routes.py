@@ -11,6 +11,7 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 import os
 import json
 import re
@@ -75,7 +76,7 @@ def _generate_code_challenge(verifier):
     challenge = hashlib.sha256(verifier.encode('utf-8')).digest()
     return base64.urlsafe_b64encode(challenge).decode('utf-8').rstrip('=')
 
-def _store_pkce_verifier(state, verifier):
+def _store_pkce_verifier(state, verifier, frontend_redirect_uri=None):
     """Armazena code_verifier temporariamente associado ao state no banco de dados"""
     from app.models import PKCEVerifier
     
@@ -90,6 +91,7 @@ def _store_pkce_verifier(state, verifier):
     pkce_entry = PKCEVerifier(
         state=state,
         code_verifier=verifier,
+        frontend_redirect_uri=frontend_redirect_uri,
         expires_at=expires_at
     )
     db.session.add(pkce_entry)
@@ -122,6 +124,29 @@ def _get_pkce_verifier(state):
     db.session.commit()
     
     return verifier
+
+def _get_frontend_redirect_uri(state):
+    """Recupera frontend_redirect_uri associado ao state do banco de dados
+    IMPORTANTE: Esta função NÃO remove a entrada do banco (será removida quando _get_pkce_verifier for chamado)
+    """
+    from app.models import PKCEVerifier
+    
+    if not state:
+        return None
+    
+    entry = PKCEVerifier.query.filter_by(state=state).first()
+    
+    if not entry:
+        return None
+    
+    # Verificar se expirou
+    if datetime.utcnow() > entry.expires_at:
+        db.session.delete(entry)
+        db.session.commit()
+        return None
+    
+    # Recuperar frontend_redirect_uri (não remover entry aqui, será removido junto com verifier)
+    return entry.frontend_redirect_uri
 
 def _cleanup_expired_pkce():
     """Remove entradas expiradas do banco de dados"""
@@ -224,14 +249,26 @@ def authorize():
         # organization_id é opcional - buscar de query params ou body, mas não exigir
         organization_id = request.args.get('organization_id')
         if not organization_id and request.is_json:
-            organization_id = (request.get_json() or {}).get('organization_id')
+            # Usar silent=True para não lançar exceção se não houver JSON (requisições GET não têm body)
+            json_data = request.get_json(silent=True)
+            if json_data:
+                organization_id = json_data.get('organization_id')
         
-        redirect_uri = request.args.get('redirect_uri')
+        # frontend_redirect_uri é opcional - para onde redirecionar após o callback
+        frontend_redirect_uri = request.args.get('frontend_redirect_uri')
+        if not frontend_redirect_uri and request.is_json:
+            json_data = request.get_json(silent=True)
+            if json_data:
+                frontend_redirect_uri = json_data.get('frontend_redirect_uri')
+        
+        # Usar redirect_uri fixo do backend (deve estar registrado no Google Cloud Console)
+        # Se não configurado, usar padrão
+        redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/api/v1/google-oauth/callback')
         
         if not redirect_uri:
             return jsonify({
-                'error': 'redirect_uri is required'
-            }), 400
+                'error': 'GOOGLE_REDIRECT_URI não configurado no backend'
+            }), 500
         
         # Configurar OAuth flow
         client_id = os.getenv('GOOGLE_CLIENT_ID', '').strip()
@@ -270,20 +307,15 @@ def authorize():
             code_challenge_method='S256'
         )
         
-        # Armazenar code_verifier associado ao state (no banco de dados para persistir entre reinicializações)
-        _store_pkce_verifier(state, code_verifier)
+        # Armazenar code_verifier e frontend_redirect_uri no banco de dados
+        # O Google não preserva modificações no state, então armazenamos no banco
+        _store_pkce_verifier(state, code_verifier, frontend_redirect_uri=frontend_redirect_uri)
         
-        # Incluir organization_id no state apenas se existir
-        # Se não existir, o callback criará automaticamente
-        if organization_id:
-            state_with_org = f"{state}:{organization_id}"
-        else:
-            state_with_org = state
-        
+        # Retornar apenas state original (Google não preserva modificações)
         return jsonify({
             'success': True,
             'authorization_url': authorization_url,
-            'state': state_with_org
+            'state': state
         }), 200
         
     except Exception as e:
@@ -307,39 +339,21 @@ def callback():
         if request.method == 'GET':
             code = request.args.get('code')
             state = request.args.get('state')
-            redirect_uri = request.args.get('redirect_uri')
-            organization_id = request.args.get('organization_id')
             scope_param = request.args.get('scope')  # Extrair scopes do callback
-            
-            # Extrair organization_id do state se estiver no formato "state:organization_id"
-            if state and ':' in state:
-                state_parts = state.split(':', 1)
-                state = state_parts[0]
-                if not organization_id:
-                    organization_id = state_parts[1]
         else:
-            data = request.get_json() or {}
+            # POST: usar silent=True para não lançar exceção se não houver JSON
+            data = request.get_json(silent=True) or {}
             code = data.get('code')
             state = data.get('state')
-            redirect_uri = data.get('redirect_uri')
-            organization_id = data.get('organization_id')
             scope_param = data.get('scope')  # Extrair scopes do callback
-            
-            # Extrair organization_id do state se estiver no formato "state:organization_id"
-            if state and ':' in state:
-                state_parts = state.split(':', 1)
-                state = state_parts[0]
-                if not organization_id:
-                    organization_id = state_parts[1]
         
         if not code:
             return jsonify({
                 'error': 'code is required'
             }), 400
         
-        # Se não tem redirect_uri, usar o padrão do .env
-        if not redirect_uri:
-            redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/api/v1/google-oauth/callback')
+        # Usar redirect_uri fixo do backend (deve estar registrado no Google Cloud Console)
+        redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/api/v1/google-oauth/callback')
         
         # Configurar OAuth flow
         client_id = os.getenv('GOOGLE_CLIENT_ID', '').strip()
@@ -351,9 +365,13 @@ def callback():
                 'error': 'Google OAuth credentials not configured'
             }), 500
         
-        # Recuperar code_verifier do PKCE usando o state original
+        # Recuperar code_verifier e frontend_redirect_uri do PKCE usando o state original
+        # IMPORTANTE: Recuperar frontend_redirect_uri ANTES de recuperar verifier (que remove a entrada)
         code_verifier = None
+        frontend_redirect_uri = None
+        organization_id = None  # Inicializar organization_id (será criado automaticamente se não existir)
         if state:
+            frontend_redirect_uri = _get_frontend_redirect_uri(state)
             code_verifier = _get_pkce_verifier(state)
             if not code_verifier:
                 logger.warning(f"Code verifier não encontrado ou expirado para state: {state}")
@@ -481,16 +499,17 @@ def callback():
                 'error': 'organization_id is required to save OAuth token'
             }), 400
         
-        # Garantir que organization_id seja UUID
+        # Garantir que organization_id seja UUID para salvar no banco
+        organization_id_uuid = None
         try:
-            organization_id = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
+            organization_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
         except (ValueError, AttributeError):
             return jsonify({
                 'error': 'Invalid organization_id format'
             }), 400
         
-        # Salvar ou atualizar tokens no banco usando organization_id
-        token = GoogleOAuthToken.query.filter_by(organization_id=organization_id).first()
+        # Salvar ou atualizar tokens no banco usando organization_id_uuid
+        token = GoogleOAuthToken.query.filter_by(organization_id=organization_id_uuid).first()
         
         if token:
             token.access_token = credentials.to_json()
@@ -500,7 +519,7 @@ def callback():
             token.updated_at = datetime.utcnow()
         else:
             token = GoogleOAuthToken(
-                organization_id=organization_id,
+                organization_id=organization_id_uuid,
                 access_token=credentials.to_json(),
                 refresh_token=credentials.refresh_token,
                 token_expiry=credentials.expiry,
@@ -510,8 +529,20 @@ def callback():
         
         db.session.commit()
         
-        # Se for GET (redirecionamento do Google), retornar HTML de sucesso
+        # Se for GET (redirecionamento do Google), redirecionar para frontend ou mostrar página de sucesso
         if request.method == 'GET':
+            # Se há frontend_redirect_uri, redirecionar para lá com os dados
+            if frontend_redirect_uri:
+                params = {
+                    'organization_id': str(organization_id),  # Usar organization_id original (string)
+                    'email': google_email,
+                    'name': google_name
+                }
+                redirect_url = f"{frontend_redirect_uri}?{urlencode(params)}"
+                logger.info(f"Redirecionando para frontend: {redirect_url}")
+                return redirect(redirect_url)
+            
+            # Caso contrário, mostrar página de sucesso
             return f"""
             <!DOCTYPE html>
             <html>
@@ -549,7 +580,7 @@ def callback():
                 <div class="container">
                     <h1>✓ Autorização Concluída!</h1>
                     <p>Conta Google conectada com sucesso.</p>
-                    <p><strong>Organization ID:</strong> {organization_id}</p>
+                    <p><strong>Organization ID:</strong> {str(organization_id)}</p>
                     <p><strong>Email:</strong> {google_email}</p>
                     <p style="margin-top: 20px; font-size: 14px; color: #999;">Você pode fechar esta janela.</p>
                 </div>
@@ -561,7 +592,7 @@ def callback():
         return jsonify({
             'success': True,
             'message': 'Google account connected successfully',
-            'organization_id': organization_id,
+            'organization_id': str(organization_id),  # Garantir que é string
             'user': {
                 'email': google_email,
                 'name': google_name

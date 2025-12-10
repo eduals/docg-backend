@@ -255,4 +255,67 @@ class HubSpotDataSource(BaseDataSource):
         except Exception as e:
             logger.error(f"Erro ao testar conexão HubSpot: {str(e)}")
             return False
+    
+    def get_object_properties(self, object_type: str) -> List[Dict[str, Any]]:
+        """
+        Busca todas as propriedades de um tipo de objeto do HubSpot.
+        
+        Args:
+            object_type: Tipo do objeto (deal, contact, company, ticket)
+        
+        Returns:
+            Lista de propriedades com name, label, type, options
+        """
+        if not self.access_token:
+            raise Exception('HubSpot access token não configurado')
+        
+        # Mapear tipos de objeto para endpoints da API
+        endpoint_map = {
+            'deal': 'crm/v3/properties/deals',
+            'deals': 'crm/v3/properties/deals',
+            'contact': 'contacts/v3/properties',
+            'contacts': 'contacts/v3/properties',
+            'company': 'crm/v3/properties/companies',
+            'companies': 'crm/v3/properties/companies',
+            'ticket': 'crm/v3/properties/tickets',
+            'tickets': 'crm/v3/properties/tickets'
+        }
+        
+        endpoint = endpoint_map.get(object_type.lower())
+        if not endpoint:
+            raise Exception(f'Tipo de objeto não suportado: {object_type}')
+        
+        url = f"{self.BASE_URL}/{endpoint}"
+        
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            results = data.get('results', [])
+            
+            # Normalizar propriedades
+            properties = []
+            for prop in results:
+                # Filtrar apenas propriedades visíveis e não arquivadas
+                if prop.get('archived', False):
+                    continue
+                
+                properties.append({
+                    'name': prop.get('name', ''),
+                    'label': prop.get('label', prop.get('name', '')),
+                    'type': prop.get('type', 'string'),
+                    'options': prop.get('options')  # Para campos enum
+                })
+            
+            return properties
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erro ao buscar propriedades do HubSpot: {str(e)}")
+            raise Exception(f'Erro ao buscar propriedades do HubSpot: {str(e)}')
 

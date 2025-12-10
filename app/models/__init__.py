@@ -2,7 +2,8 @@
 from .organization import Organization, User, OrganizationFeature
 from .connection import DataSourceConnection
 from .template import Template
-from .workflow import Workflow, WorkflowFieldMapping, AIGenerationMapping
+from .workflow import Workflow, WorkflowFieldMapping, AIGenerationMapping, WorkflowNode
+from .hubspot_property_cache import HubSpotPropertyCache
 from .document import GeneratedDocument
 from .signature import SignatureRequest
 from .execution import WorkflowExecution
@@ -63,6 +64,8 @@ __all__ = [
     'Workflow',
     'WorkflowFieldMapping',
     'AIGenerationMapping',
+    'WorkflowNode',
+    'HubSpotPropertyCache',
     'GeneratedDocument',
     'SignatureRequest',
     'WorkflowExecution',

@@ -273,3 +273,55 @@ def upload_file():
             'message': str(e)
         }), 500
 
+
+@bp.route('/oauth/status', methods=['GET'])
+@flexible_hubspot_auth
+@require_auth
+@require_org
+def get_oauth_status():
+    """Retorna status da conexão Google Drive OAuth"""
+    try:
+        organization_id = g.organization_id
+        
+        token = GoogleOAuthToken.query.filter_by(organization_id=organization_id).first()
+        
+        if not token:
+            return jsonify({
+                'connected': False,
+                'status': 'not_connected',
+                'message': 'Google Drive não está conectado'
+            }), 200
+        
+        # Verificar se token está válido
+        creds = get_google_credentials(organization_id)
+        
+        if not creds:
+            return jsonify({
+                'connected': False,
+                'status': 'expired',
+                'message': 'Token expirado ou inválido'
+            }), 200
+        
+        # Testar conexão fazendo uma chamada simples
+        try:
+            service = build('drive', 'v3', credentials=creds)
+            service.files().list(pageSize=1).execute()
+            
+            return jsonify({
+                'connected': True,
+                'status': 'active',
+                'message': 'Google Drive conectado e funcionando'
+            }), 200
+        except Exception as e:
+            return jsonify({
+                'connected': False,
+                'status': 'error',
+                'message': f'Erro ao testar conexão: {str(e)}'
+            }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
+

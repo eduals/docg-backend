@@ -5,6 +5,7 @@ from app.models import (
     DataSourceConnection, Organization
 )
 from app.services.document_generation import DocumentGenerator
+from app.services.workflow_executor import WorkflowExecutor
 from app.services.data_sources.hubspot import HubSpotDataSource
 from app.utils.auth import require_auth, require_org
 from app.utils.hubspot_auth import flexible_hubspot_auth
@@ -124,30 +125,56 @@ def generate_document():
         else:
             return jsonify({'error': f'Fonte {connection.source_type} não suportada ainda'}), 400
     
-    # Gerar documento
+    # Gerar documento usando WorkflowExecutor
     try:
-        # Obter credentials do Google usando organization_id
-        organization_id = g.organization_id
-        # Converter organization_id para UUID se for string para garantir consistência
-        org_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
+        # Verificar se workflow tem nodes configurados
+        from app.models import WorkflowNode
+        nodes = WorkflowNode.query.filter_by(workflow_id=workflow.id).count()
         
-        google_creds = get_google_credentials(organization_id)
-        if not google_creds:
-            return jsonify({'error': 'Credenciais do Google não configuradas'}), 400
-        
-        generator = DocumentGenerator(google_creds)
-        doc = generator.generate_from_workflow(
-            workflow=workflow,
-            source_data=source_data,
-            source_object_id=source_object_id,
-            user_id=data.get('user_id'),
-            organization_id=org_id_uuid
-        )
-        
-        return jsonify({
-            'success': True,
-            'document': doc_to_dict(doc)
-        }), 201
+        if nodes > 0:
+            # Usar WorkflowExecutor (nova estrutura com nodes)
+            executor = WorkflowExecutor()
+            execution = executor.execute_workflow(
+                workflow=workflow,
+                source_object_id=source_object_id,
+                source_object_type=workflow.source_object_type or source_object_type,
+                user_id=data.get('user_id')
+            )
+            
+            # Buscar documento gerado
+            if execution.generated_document_id:
+                doc = GeneratedDocument.query.get(execution.generated_document_id)
+                return jsonify({
+                    'success': True,
+                    'document': doc_to_dict(doc),
+                    'execution_id': str(execution.id)
+                }), 201
+            else:
+                return jsonify({
+                    'error': 'Documento não foi gerado durante a execução'
+                }), 500
+        else:
+            # Usar método legado (sem nodes)
+            organization_id = g.organization_id
+            org_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
+            
+            google_creds = get_google_credentials(organization_id)
+            if not google_creds:
+                return jsonify({'error': 'Credenciais do Google não configuradas'}), 400
+            
+            generator = DocumentGenerator(google_creds)
+            doc = generator.generate_from_workflow(
+                workflow=workflow,
+                source_data=source_data,
+                source_object_id=source_object_id,
+                user_id=data.get('user_id'),
+                organization_id=org_id_uuid
+            )
+            
+            return jsonify({
+                'success': True,
+                'document': doc_to_dict(doc)
+            }), 201
         
     except Exception as e:
         logger.error(f"Erro ao gerar documento: {str(e)}")
@@ -167,30 +194,54 @@ def regenerate_document(document_id):
         organization_id=org_id
     ).first_or_404()
     
-    # Usa os mesmos dados do documento original
+    # Regenerar usando WorkflowExecutor se workflow tiver nodes
     try:
-        organization_id = g.organization_id
-        # Converter organization_id para UUID se for string para garantir consistência
-        org_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
+        from app.models import WorkflowNode
+        nodes = WorkflowNode.query.filter_by(workflow_id=doc.workflow_id).count()
         
-        google_creds = get_google_credentials(organization_id)
-        if not google_creds:
-            return jsonify({'error': 'Credenciais do Google não configuradas'}), 400
-        
-        generator = DocumentGenerator(google_creds)
-        
-        new_doc = generator.generate_from_workflow(
-            workflow=doc.workflow,
-            source_data=doc.generated_data,
-            source_object_id=doc.source_object_id,
-            user_id=request.get_json().get('user_id') if request.is_json else None,
-            organization_id=org_id_uuid
-        )
-        
-        return jsonify({
-            'success': True,
-            'document': doc_to_dict(new_doc)
-        }), 201
+        if nodes > 0:
+            # Usar WorkflowExecutor
+            executor = WorkflowExecutor()
+            execution = executor.execute_workflow(
+                workflow=doc.workflow,
+                source_object_id=doc.source_object_id,
+                source_object_type=doc.source_object_type,
+                user_id=request.get_json().get('user_id') if request.is_json else None
+            )
+            
+            if execution.generated_document_id:
+                new_doc = GeneratedDocument.query.get(execution.generated_document_id)
+                return jsonify({
+                    'success': True,
+                    'document': doc_to_dict(new_doc)
+                }), 201
+            else:
+                return jsonify({
+                    'error': 'Documento não foi gerado durante a execução'
+                }), 500
+        else:
+            # Método legado
+            organization_id = g.organization_id
+            org_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
+            
+            google_creds = get_google_credentials(organization_id)
+            if not google_creds:
+                return jsonify({'error': 'Credenciais do Google não configuradas'}), 400
+            
+            generator = DocumentGenerator(google_creds)
+            
+            new_doc = generator.generate_from_workflow(
+                workflow=doc.workflow,
+                source_data=doc.generated_data,
+                source_object_id=doc.source_object_id,
+                user_id=request.get_json().get('user_id') if request.is_json else None,
+                organization_id=org_id_uuid
+            )
+            
+            return jsonify({
+                'success': True,
+                'document': doc_to_dict(new_doc)
+            }), 201
         
     except Exception as e:
         logger.error(f"Erro ao regenerar documento: {str(e)}")

@@ -88,5 +88,8 @@ def create_app(config_class=Config):
     from app.routes import hubspot_workflow_action
     app.register_blueprint(hubspot_workflow_action.hubspot_workflow_bp)
     
+    from app.routes import hubspot_properties
+    app.register_blueprint(hubspot_properties.hubspot_properties_bp)
+    
     return app
 
