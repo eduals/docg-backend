@@ -159,7 +159,7 @@ def flexible_hubspot_auth(f):
     Middleware flexível de autenticação que aceita:
     1. Requisições do HubSpot via hubspot.fetch() (com portalId/appId - verificar PRIMEIRO)
     2. Validação de assinatura HubSpot (X-HubSpot-Signature-v3 + X-HubSpot-Request-Timestamp)
-    3. Authorization Bearer token (DOCG_SECRET)
+    3. Authorization Bearer token (BACKEND_API_TOKEN)
     
     Proteção contra replay attacks: rejeita requests com timestamp > 5 minutos.
     """
@@ -246,14 +246,14 @@ def flexible_hubspot_auth(f):
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             token = auth_header.replace('Bearer ', '').strip()
-            docg_secret = os.getenv('DOCG_SECRET')
+            backend_api_token = os.getenv('BACKEND_API_TOKEN')
             
-            if not docg_secret:
-                logger.error('DOCG_SECRET não configurado')
+            if not backend_api_token:
+                logger.error('BACKEND_API_TOKEN não configurado')
                 return jsonify({'error': 'Configuração inválida'}), 500
             
-            # Comparar token com DOCG_SECRET
-            if hmac.compare_digest(token, docg_secret):
+            # Comparar token com BACKEND_API_TOKEN
+            if hmac.compare_digest(token, backend_api_token):
                 # Bearer token válido - permitir acesso
                 logger.debug('Autenticação Bearer token válida')
                 g.auth_method = 'bearer_token'
