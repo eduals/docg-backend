@@ -156,7 +156,14 @@ def test_webhook(workflow_id):
             return jsonify({'error': 'Trigger node não encontrado'}), 404
         
         config = trigger_node.config or {}
-        if config.get('trigger_type') != 'webhook':
+        # Verificar se é webhook trigger de múltiplas formas
+        is_webhook_trigger = (
+            config.get('trigger_type') == 'webhook' or
+            config.get('source_object_type') == 'webhook' or
+            trigger_node.webhook_token is not None
+        )
+        
+        if not is_webhook_trigger:
             return jsonify({'error': 'Este workflow não usa webhook trigger'}), 400
         
         if not trigger_node.webhook_token:
@@ -272,7 +279,14 @@ def regenerate_webhook_token(workflow_id):
             return jsonify({'error': 'Trigger node não encontrado'}), 404
         
         config = trigger_node.config or {}
-        if config.get('trigger_type') != 'webhook':
+        # Verificar se é webhook trigger de múltiplas formas
+        is_webhook_trigger = (
+            config.get('trigger_type') == 'webhook' or
+            config.get('source_object_type') == 'webhook' or
+            trigger_node.webhook_token is not None
+        )
+        
+        if not is_webhook_trigger:
             return jsonify({'error': 'Este workflow não usa webhook trigger'}), 400
         
         # Gerar novo token

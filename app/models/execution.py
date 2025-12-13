@@ -7,7 +7,7 @@ class WorkflowExecution(db.Model):
     __tablename__ = 'workflow_executions'
     
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id'), nullable=False)
+    workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id', ondelete='CASCADE'), nullable=False)
     generated_document_id = db.Column(UUID(as_uuid=True), db.ForeignKey('generated_documents.id'))
     
     trigger_type = db.Column(db.String(50))

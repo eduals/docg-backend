@@ -1,6 +1,6 @@
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, current_app
 from app.database import db
-from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection, WorkflowNode
+from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection, WorkflowNode, WorkflowExecution
 from app.utils.auth import require_auth, require_org, require_admin
 from app.utils.hubspot_auth import flexible_hubspot_auth
 import logging
@@ -274,8 +274,25 @@ def delete_workflow(workflow_id):
         organization_id=g.organization_id
     ).first_or_404()
     
+    # Deletar execuções explicitamente antes de deletar o workflow
+    # Isso evita que o SQLAlchemy tente fazer UPDATE com workflow_id=NULL
+    WorkflowExecution.query.filter_by(workflow_id=workflow.id).delete()
+    
+    # Deletar field mappings explicitamente
+    WorkflowFieldMapping.query.filter_by(workflow_id=workflow.id).delete()
+    
+    # Deletar AI mappings explicitamente
+    AIGenerationMapping.query.filter_by(workflow_id=workflow.id).delete()
+    
+    # Deletar nodes explicitamente antes de deletar o workflow
+    # Isso evita que o SQLAlchemy tente fazer UPDATE com workflow_id=NULL
+    WorkflowNode.query.filter_by(workflow_id=workflow.id).delete()
+    
+    # Deletar o workflow
     db.session.delete(workflow)
     db.session.commit()
+    
+    logger.info(f'Workflow {workflow_id} deletado com sucesso')
     
     return jsonify({'success': True})
 
@@ -907,15 +924,32 @@ def reorder_workflow_nodes(workflow_id):
                 'error': 'O node na position 1 deve ser do tipo trigger'
             }), 400
     
-    # Atualizar positions
-    for item in node_order:
-        node = next((n for n in nodes if str(n.id) == item['node_id']), None)
-        if node:
-            node.position = item['position']
-    
-    db.session.commit()
-    
-    return jsonify({'success': True})
+    # Atualizar positions em duas etapas para evitar conflito de constraint única
+    try:
+        # Etapa 1: Atualizar todos para posições temporárias (negativas)
+        # Isso evita conflito quando dois nodes precisam trocar de posição
+        for idx, item in enumerate(node_order):
+            node = next((n for n in nodes if str(n.id) == item['node_id']), None)
+            if node:
+                temp_position = -(idx + 1000)  # Posições temporárias negativas (ex: -1000, -1001, etc.)
+                node.position = temp_position
+        
+        db.session.commit()  # Commit das posições temporárias
+        
+        # Etapa 2: Atualizar para posições finais
+        for item in node_order:
+            node = next((n for n in nodes if str(n.id) == item['node_id']), None)
+            if node:
+                node.position = item['position']
+        
+        db.session.commit()
+        
+        current_app.logger.info(f'Nodes reordenados com sucesso no workflow {workflow_id}')
+        return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f'Erro ao reordenar nodes no workflow {workflow_id}: {str(e)}')
+        return jsonify({'error': f'Erro ao reordenar nodes: {str(e)}'}), 500
 
 
 @workflows_bp.route('/<workflow_id>/nodes/<node_id>/config', methods=['GET'])
@@ -934,10 +968,16 @@ def get_workflow_node_config(workflow_id, node_id):
         workflow_id=workflow.id
     ).first_or_404()
     
-    return jsonify({
+    response_data = {
         'config': node.config or {},
         'status': node.status
-    })
+    }
+    
+    # Adicionar webhook_token se for trigger node
+    if node.node_type == 'trigger' and node.webhook_token:
+        response_data['webhook_token'] = node.webhook_token
+    
+    return jsonify(response_data)
 
 
 @workflows_bp.route('/<workflow_id>/nodes/<node_id>/config', methods=['PUT'])

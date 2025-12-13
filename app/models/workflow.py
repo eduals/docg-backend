@@ -89,7 +89,7 @@ class WorkflowFieldMapping(db.Model):
     __tablename__ = 'workflow_field_mappings'
     
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id'), nullable=False)
+    workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id', ondelete='CASCADE'), nullable=False)
     template_tag = db.Column(db.String(255), nullable=False)
     source_field = db.Column(db.String(255), nullable=False)
     transform_type = db.Column(db.String(50))

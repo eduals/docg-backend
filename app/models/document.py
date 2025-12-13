@@ -8,7 +8,7 @@ class GeneratedDocument(db.Model):
     
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = db.Column(UUID(as_uuid=True), db.ForeignKey('organizations.id'), nullable=False)
-    workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id'))
+    workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id', ondelete='SET NULL'))
     
     # Source reference
     source_connection_id = db.Column(UUID(as_uuid=True), db.ForeignKey('data_source_connections.id'))
