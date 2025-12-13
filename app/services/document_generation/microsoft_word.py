@@ -15,15 +15,24 @@ class MicrosoftWordService:
     Serviço para manipulação de Microsoft Word via Graph API.
     """
     
-    def __init__(self, access_token: str):
+    def __init__(self, credentials: Dict[str, Any]):
         """
         Args:
-            access_token: Access token do Microsoft Graph API
+            credentials: Dict com credenciais Microsoft (access_token, refresh_token, etc.)
+                        ou string com access_token (compatibilidade)
         """
-        self.access_token = access_token
+        if isinstance(credentials, str):
+            # Compatibilidade: aceitar string como access_token
+            self.access_token = credentials
+        else:
+            self.access_token = credentials.get('access_token')
+        
+        if not self.access_token:
+            raise ValueError('access_token não fornecido')
+        
         self.base_url = 'https://graph.microsoft.com/v1.0'
         self.headers = {
-            'Authorization': f'Bearer {access_token}',
+            'Authorization': f'Bearer {self.access_token}',
             'Content-Type': 'application/json'
         }
     

@@ -328,7 +328,12 @@ class MicrosoftWordNodeExecutor(NodeExecutor):
                 access_token = credentials.get('access_token')
         
         # Criar serviço
-        word_service = MicrosoftWordService(access_token)
+        word_service = MicrosoftWordService({
+            'access_token': access_token,
+            'refresh_token': credentials.get('refresh_token'),
+            'expires_at': credentials.get('expires_at'),
+            'user_email': credentials.get('user_email'),
+        })
         
         # Buscar field mappings do node
         field_mappings_data = config.get('field_mappings', [])
@@ -363,9 +368,26 @@ class MicrosoftWordNodeExecutor(NodeExecutor):
         ai_replacements = {}
         ai_mappings = list(workflow.ai_mappings)
         if ai_mappings:
-            # TODO: Implementar processamento de AI tags para Word
-            # Por enquanto, apenas log
-            logger.info(f'AI mappings encontrados mas não processados para Word: {len(ai_mappings)}')
+            try:
+                from app.services.document_generation.generator import DocumentGenerator, AIGenerationMetrics
+                from app.routes.google_oauth_routes import get_google_credentials
+                
+                # Usar credenciais Google para gerar conteúdo AI (mesmo sistema)
+                google_creds = get_google_credentials(workflow.organization_id)
+                if google_creds:
+                    ai_metrics = AIGenerationMetrics()
+                    generator = DocumentGenerator(google_creds)
+                    ai_replacements = generator._process_ai_tags(
+                        workflow=workflow,
+                        source_data=context.source_data,
+                        metrics=ai_metrics
+                    )
+                    logger.info(f'AI tags processadas para Word: {len(ai_replacements)} substituições')
+                else:
+                    logger.warning('Credenciais Google não encontradas para processar AI tags')
+            except Exception as e:
+                logger.exception(f'Erro ao processar AI tags para Word: {str(e)}')
+                # Continuar sem AI tags se houver erro
         
         # Combinar dados
         combined_data = {**context.source_data, **ai_replacements}
@@ -639,7 +661,12 @@ class MicrosoftPowerPointNodeExecutor(NodeExecutor):
                 access_token = credentials.get('access_token')
         
         # Criar serviço
-        ppt_service = MicrosoftPowerPointService(access_token)
+        ppt_service = MicrosoftPowerPointService({
+            'access_token': access_token,
+            'refresh_token': credentials.get('refresh_token'),
+            'expires_at': credentials.get('expires_at'),
+            'user_email': credentials.get('user_email'),
+        })
         
         # Buscar field mappings
         field_mappings_data = config.get('field_mappings', [])
@@ -673,7 +700,26 @@ class MicrosoftPowerPointNodeExecutor(NodeExecutor):
         ai_replacements = {}
         ai_mappings = list(workflow.ai_mappings)
         if ai_mappings:
-            logger.info(f'AI mappings encontrados mas não processados para PowerPoint: {len(ai_mappings)}')
+            try:
+                from app.services.document_generation.generator import DocumentGenerator, AIGenerationMetrics
+                from app.routes.google_oauth_routes import get_google_credentials
+                
+                # Usar credenciais Google para gerar conteúdo AI (mesmo sistema)
+                google_creds = get_google_credentials(workflow.organization_id)
+                if google_creds:
+                    ai_metrics = AIGenerationMetrics()
+                    generator = DocumentGenerator(google_creds)
+                    ai_replacements = generator._process_ai_tags(
+                        workflow=workflow,
+                        source_data=context.source_data,
+                        metrics=ai_metrics
+                    )
+                    logger.info(f'AI tags processadas para PowerPoint: {len(ai_replacements)} substituições')
+                else:
+                    logger.warning('Credenciais Google não encontradas para processar AI tags')
+            except Exception as e:
+                logger.exception(f'Erro ao processar AI tags para PowerPoint: {str(e)}')
+                # Continuar sem AI tags se houver erro
         
         # Combinar dados
         combined_data = {**context.source_data, **ai_replacements}
@@ -807,11 +853,63 @@ class GmailEmailNodeExecutor(NodeExecutor):
                 if str(doc_info.get('node_id')) in document_node_ids:
                     # Buscar documento gerado
                     doc = GeneratedDocument.query.get(doc_info.get('document_id'))
-                    if doc and doc.pdf_file_id:
-                        # Baixar PDF
-                        # TODO: Implementar download do PDF do Google Drive ou OneDrive
-                        # Por enquanto, apenas log
-                        logger.info(f'Documento {doc.id} seria anexado, mas download não implementado')
+                    if doc:
+                        try:
+                            pdf_bytes = None
+                            filename = doc.name or f'document_{doc.id}.pdf'
+                            
+                            # Tentar baixar PDF do Google Drive
+                            if doc.pdf_file_id:
+                                from app.services.document_generation.google_docs import GoogleDocsService
+                                from app.services.document_generation.google_slides import GoogleSlidesService
+                                from app.routes.google_drive_routes import get_google_credentials
+                                
+                                google_creds = get_google_credentials(workflow.organization_id)
+                                if google_creds:
+                                    # Verificar tipo de arquivo pelo template
+                                    template = doc.template
+                                    if template:
+                                        if template.google_file_type == 'document' or not template.google_file_type:
+                                            docs_service = GoogleDocsService(google_creds)
+                                            pdf_bytes = docs_service.export_as_pdf(doc.pdf_file_id)
+                                        elif template.google_file_type == 'presentation':
+                                            slides_service = GoogleSlidesService(google_creds)
+                                            pdf_bytes = slides_service.export_as_pdf(doc.pdf_file_id)
+                                    else:
+                                        # Fallback: assumir documento
+                                        docs_service = GoogleDocsService(google_creds)
+                                        pdf_bytes = docs_service.export_as_pdf(doc.pdf_file_id)
+                            
+                            # Se não encontrou PDF do Google, tentar Microsoft via template
+                            if not pdf_bytes and doc.template:
+                                template = doc.template
+                                if template.microsoft_file_id:
+                                    from app.services.document_generation.microsoft_word import MicrosoftWordService
+                                    from app.services.document_generation.microsoft_powerpoint import MicrosoftPowerPointService
+                                    from app.routes.microsoft_oauth_routes import get_microsoft_credentials
+                                    
+                                    microsoft_creds = get_microsoft_credentials(workflow.organization_id)
+                                    if microsoft_creds:
+                                        # Verificar tipo de arquivo pelo template
+                                        if template.microsoft_file_type == 'word' or template.microsoft_file_type == 'document':
+                                            word_service = MicrosoftWordService(microsoft_creds)
+                                            pdf_bytes = word_service.export_as_pdf(template.microsoft_file_id)
+                                        elif template.microsoft_file_type == 'powerpoint' or template.microsoft_file_type == 'presentation':
+                                            ppt_service = MicrosoftPowerPointService(microsoft_creds)
+                                            pdf_bytes = ppt_service.export_as_pdf(template.microsoft_file_id)
+                            
+                            if pdf_bytes:
+                                attachments.append({
+                                    'filename': filename,
+                                    'content': pdf_bytes,
+                                    'content_type': 'application/pdf'
+                                })
+                                logger.info(f'PDF anexado: {filename}')
+                            else:
+                                logger.warning(f'Não foi possível baixar PDF para documento {doc.id}')
+                        except Exception as e:
+                            logger.exception(f'Erro ao baixar PDF para anexo: {str(e)}')
+                            # Continuar mesmo se falhar
         
         # Enviar email
         EmailService.send_via_smtp(
@@ -905,9 +1003,63 @@ class OutlookEmailNodeExecutor(NodeExecutor):
                 if str(doc_info.get('node_id')) in document_node_ids:
                     # Buscar documento gerado
                     doc = GeneratedDocument.query.get(doc_info.get('document_id'))
-                    if doc and doc.pdf_file_id:
-                        # TODO: Implementar download do PDF
-                        logger.info(f'Documento {doc.id} seria anexado, mas download não implementado')
+                    if doc:
+                        try:
+                            pdf_bytes = None
+                            filename = doc.name or f'document_{doc.id}.pdf'
+                            
+                            # Tentar baixar PDF do Microsoft OneDrive via template
+                            if not pdf_bytes and doc.template:
+                                template = doc.template
+                                if template.microsoft_file_id:
+                                    from app.services.document_generation.microsoft_word import MicrosoftWordService
+                                    from app.services.document_generation.microsoft_powerpoint import MicrosoftPowerPointService
+                                    from app.routes.microsoft_oauth_routes import get_microsoft_credentials
+                                    
+                                    microsoft_creds = get_microsoft_credentials(workflow.organization_id)
+                                    if microsoft_creds:
+                                        # Verificar tipo de arquivo pelo template
+                                        if template.microsoft_file_type == 'word' or template.microsoft_file_type == 'document':
+                                            word_service = MicrosoftWordService(microsoft_creds)
+                                            pdf_bytes = word_service.export_as_pdf(template.microsoft_file_id)
+                                        elif template.microsoft_file_type == 'powerpoint' or template.microsoft_file_type == 'presentation':
+                                            ppt_service = MicrosoftPowerPointService(microsoft_creds)
+                                            pdf_bytes = ppt_service.export_as_pdf(template.microsoft_file_id)
+                            
+                            # Se não encontrou PDF do Microsoft, tentar Google
+                            if not pdf_bytes and doc.pdf_file_id:
+                                from app.services.document_generation.google_docs import GoogleDocsService
+                                from app.services.document_generation.google_slides import GoogleSlidesService
+                                from app.routes.google_drive_routes import get_google_credentials
+                                
+                                google_creds = get_google_credentials(workflow.organization_id)
+                                if google_creds:
+                                    # Verificar tipo de arquivo pelo template
+                                    template = doc.template
+                                    if template:
+                                        if template.google_file_type == 'document' or not template.google_file_type:
+                                            docs_service = GoogleDocsService(google_creds)
+                                            pdf_bytes = docs_service.export_as_pdf(doc.pdf_file_id)
+                                        elif template.google_file_type == 'presentation':
+                                            slides_service = GoogleSlidesService(google_creds)
+                                            pdf_bytes = slides_service.export_as_pdf(doc.pdf_file_id)
+                                    else:
+                                        # Fallback: assumir documento
+                                        docs_service = GoogleDocsService(google_creds)
+                                        pdf_bytes = docs_service.export_as_pdf(doc.pdf_file_id)
+                            
+                            if pdf_bytes:
+                                attachments.append({
+                                    'filename': filename,
+                                    'content': pdf_bytes,
+                                    'content_type': 'application/pdf'
+                                })
+                                logger.info(f'PDF anexado: {filename}')
+                            else:
+                                logger.warning(f'Não foi possível baixar PDF para documento {doc.id}')
+                        except Exception as e:
+                            logger.exception(f'Erro ao baixar PDF para anexo: {str(e)}')
+                            # Continuar mesmo se falhar
         
         # Enviar email
         EmailService.send_via_graph_api(
@@ -1005,11 +1157,55 @@ class HumanInLoopNodeExecutor(NodeExecutor):
         db.session.commit()
         
         # Enviar emails de aprovação
-        # TODO: Implementar envio de emails com links de aprovação
-        # Por enquanto, apenas log
-        for approval in approvals:
-            approval_url = f"https://app.exemplo.com/approve/{approval.approval_token}"
-            logger.info(f'Link de aprovação para {approval.approver_email}: {approval_url}')
+        try:
+            from app.services.email_service import EmailService
+            from app.services.document_generation.tag_processor import TagProcessor
+            import os
+            
+            # Obter URL base do frontend
+            frontend_url = os.getenv('FRONTEND_URL', os.getenv('APP_URL', 'https://app.exemplo.com'))
+            
+            for approval in approvals:
+                approval_url = f"{frontend_url.rstrip('/')}/approve/{approval.approval_token}"
+                
+                # Processar mensagem template
+                processed_message = TagProcessor.replace_tags(message_template, context.source_data)
+                
+                # Construir HTML do email
+                documents_html = ''
+                if document_urls:
+                    documents_html = '<ul>'
+                    for doc in document_urls:
+                        documents_html += f'<li><a href="{doc.get("url", "#")}">{doc.get("name", "Documento")}</a></li>'
+                    documents_html += '</ul>'
+                
+                email_body = f"""
+                <html>
+                <body>
+                    <p>{processed_message}</p>
+                    {documents_html}
+                    <p>
+                        <a href="{approval_url}" style="display: inline-block; padding: 10px 20px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 5px; margin-right: 10px;">Aprovar</a>
+                        <a href="{approval_url}" style="display: inline-block; padding: 10px 20px; background-color: #dc2626; color: white; text-decoration: none; border-radius: 5px;">Rejeitar</a>
+                    </p>
+                    <p style="margin-top: 20px; font-size: 12px; color: #666;">
+                        Este link expira em {timeout_hours} horas.
+                    </p>
+                </body>
+                </html>
+                """
+                
+                # Tentar enviar via conexão de email configurada na organização
+                # Por enquanto, apenas log (requer configuração de email da organização)
+                logger.info(f'Link de aprovação para {approval.approver_email}: {approval_url}')
+                logger.info(f'Email de aprovação preparado para {approval.approver_email}')
+                
+                # TODO: Implementar envio real quando sistema de email da organização estiver configurado
+                # Por enquanto, o link pode ser copiado do log ou aprovado diretamente pela URL
+                
+        except Exception as e:
+            logger.exception(f'Erro ao preparar emails de aprovação: {str(e)}')
+            # Não falhar a execução se email falhar, apenas log
         
         # Não continuar para próximo node (execução pausada)
         # A execução será retomada quando a aprovação for aprovada/rejeitada

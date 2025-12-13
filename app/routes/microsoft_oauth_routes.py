@@ -4,13 +4,14 @@ Similar ao Google OAuth, mas para Microsoft 365/OneDrive.
 """
 from flask import Blueprint, request, jsonify, redirect, g
 from app.database import db
-from app.models import DataSourceConnection, Organization
+from app.models import DataSourceConnection, Organization, User
 from app.utils.auth import require_auth, require_org
 from app.utils.hubspot_auth import flexible_hubspot_auth
 from app.utils.encryption import encrypt_credentials, decrypt_credentials
 from app.config import Config
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
+from typing import Dict, Any, Optional
 import os
 import json
 import uuid
@@ -19,6 +20,7 @@ import secrets
 import base64
 import hashlib
 import requests
+import re
 
 logger = logging.getLogger(__name__)
 microsoft_oauth_bp = Blueprint('microsoft_oauth', __name__, url_prefix='/api/v1/microsoft/oauth')
@@ -91,23 +93,46 @@ def _get_pkce_verifier(state):
     
     return verifier
 
+def _get_frontend_redirect_uri(state):
+    """Recupera frontend_redirect_uri associado ao state do banco de dados
+    IMPORTANTE: Esta função NÃO remove a entrada do banco (será removida quando _get_pkce_verifier for chamado)
+    """
+    from app.models import PKCEVerifier
+    
+    if not state:
+        return None
+    
+    entry = PKCEVerifier.query.filter_by(state=state).first()
+    
+    if not entry:
+        return None
+    
+    # Verificar se expirou
+    if datetime.utcnow() > entry.expires_at:
+        db.session.delete(entry)
+        db.session.commit()
+        return None
+    
+    # Recuperar frontend_redirect_uri (não remover entry aqui, será removido junto com verifier)
+    return entry.frontend_redirect_uri
+
 
 @microsoft_oauth_bp.route('/authorize', methods=['GET'])
 @flexible_hubspot_auth
-@require_org
 def authorize():
     """
     Inicia o fluxo OAuth do Microsoft.
+    Similar ao Google OAuth - não requer organization_id para primeiro acesso.
     
     Query params:
     - frontend_redirect_uri: URI para redirecionar após autenticação
-    - organization_id: ID da organização (opcional, usa g.organization_id se não fornecido)
+    - organization_id: ID da organização (opcional, será criado automaticamente se não existir)
     """
     frontend_redirect_uri = request.args.get('frontend_redirect_uri')
-    organization_id = request.args.get('organization_id') or g.organization_id
-    
-    if not organization_id:
-        return jsonify({'error': 'organization_id é obrigatório'}), 400
+    # organization_id é opcional - buscar de query params ou g.organization_id, mas não exigir
+    organization_id = request.args.get('organization_id')
+    if not organization_id and hasattr(g, 'organization_id'):
+        organization_id = g.organization_id
     
     # Obter credenciais do Microsoft do config
     client_id = os.getenv('MICROSOFT_CLIENT_ID')
@@ -150,35 +175,56 @@ def authorize():
     })
 
 
-@microsoft_oauth_bp.route('/callback', methods=['GET'])
+@microsoft_oauth_bp.route('/callback', methods=['GET', 'POST'])
 def callback():
     """
     Callback do OAuth do Microsoft.
     Recebe o código de autorização e troca por access token.
+    Se for o primeiro login (não existe organização), cria Organization + User admin automaticamente.
     """
-    code = request.args.get('code')
-    state = request.args.get('state')
-    error = request.args.get('error')
-    
-    if error:
-        logger.error(f'Erro no callback do Microsoft OAuth: {error}')
-        return jsonify({'error': f'OAuth error: {error}'}), 400
-    
-    if not code or not state:
-        return jsonify({'error': 'code e state são obrigatórios'}), 400
-    
-    # Recuperar code_verifier
-    code_verifier = _get_pkce_verifier(state)
-    if not code_verifier:
-        return jsonify({'error': 'State inválido ou expirado'}), 400
-    
-    # Obter credenciais
-    client_id = os.getenv('MICROSOFT_CLIENT_ID')
-    client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
-    redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', f'{request.url_root.rstrip("/")}/api/v1/microsoft/oauth/callback')
-    
-    # Trocar código por token
     try:
+        # Suportar tanto GET (query params) quanto POST (body)
+        if request.method == 'GET':
+            code = request.args.get('code')
+            state = request.args.get('state')
+            error = request.args.get('error')
+        else:
+            data = request.get_json(silent=True) or {}
+            code = data.get('code')
+            state = data.get('state')
+            error = data.get('error')
+        
+        if error:
+            logger.error(f'Erro no callback do Microsoft OAuth: {error}')
+            if request.method == 'GET':
+                return redirect(f"/login?error={error}")
+            return jsonify({'error': f'OAuth error: {error}'}), 400
+        
+        if not code or not state:
+            if request.method == 'GET':
+                return redirect("/login?error=missing_code_or_state")
+            return jsonify({'error': 'code e state são obrigatórios'}), 400
+        
+        # Recuperar code_verifier e frontend_redirect_uri
+        frontend_redirect_uri = _get_frontend_redirect_uri(state)
+        code_verifier = _get_pkce_verifier(state)
+        if not code_verifier:
+            if request.method == 'GET':
+                return redirect("/login?error=invalid_state")
+            return jsonify({'error': 'State inválido ou expirado'}), 400
+        
+        # Obter credenciais
+        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', f'{request.url_root.rstrip("/")}/api/v1/microsoft/oauth/callback')
+        
+        if not client_id or not client_secret:
+            logger.error("Microsoft OAuth credentials not configured")
+            if request.method == 'GET':
+                return redirect("/login?error=oauth_not_configured")
+            return jsonify({'error': 'Microsoft OAuth credentials not configured'}), 500
+        
+        # Trocar código por token
         token_data = {
             'client_id': client_id,
             'client_secret': client_secret,
@@ -202,20 +248,104 @@ def callback():
             'https://graph.microsoft.com/v1.0/me',
             headers={'Authorization': f'Bearer {access_token}'}
         )
-        user_info = user_info_response.json() if user_info_response.ok else {}
+        user_info_response.raise_for_status()
+        user_info = user_info_response.json()
         
-        # Buscar organization_id do state (pode estar no frontend_redirect_uri ou precisar ser passado)
-        # Por enquanto, usar g.organization_id se disponível
-        organization_id = g.organization_id if hasattr(g, 'organization_id') else None
+        microsoft_email = user_info.get('mail') or user_info.get('userPrincipalName')
+        microsoft_name = user_info.get('displayName', '')
+        microsoft_user_id = user_info.get('id')
         
+        # Se não tem organization_id, criar organização e usuário admin
+        organization_id = None
         if not organization_id:
-            # Tentar extrair do frontend_redirect_uri ou usar default
-            # Por enquanto, retornar erro se não tiver
-            return jsonify({'error': 'organization_id não encontrado'}), 400
+            # Verificar se já existe organização para este email (via User)
+            existing_user = User.query.filter_by(email=microsoft_email).first()
+            
+            if existing_user:
+                # Usuário já existe, usar organização dele
+                organization_id = str(existing_user.organization_id)
+                org = Organization.query.filter_by(id=organization_id).first()
+            else:
+                # Criar nova organização
+                from app.config import Config
+                import re
+                
+                org_name = microsoft_name or microsoft_email.split('@')[0]
+                slug_base = re.sub(r'[^a-z0-9]+', '-', org_name.lower()).strip('-')
+                slug = slug_base
+                counter = 1
+                
+                while Organization.query.filter_by(slug=slug).first():
+                    slug = f"{slug_base}-{counter}"
+                    counter += 1
+                
+                # Configurar trial (20 dias por padrão)
+                trial_expires_at = datetime.utcnow() + timedelta(days=Config.TRIAL_DAYS)
+                
+                org = Organization(
+                    name=org_name,
+                    slug=slug,
+                    plan='free',
+                    billing_email=microsoft_email,
+                    trial_expires_at=trial_expires_at
+                )
+                db.session.add(org)
+                db.session.flush()  # Para obter o ID
+                
+                # Criar usuário admin
+                admin_user = User(
+                    organization_id=org.id,
+                    email=microsoft_email,
+                    name=microsoft_name,
+                    role='admin',
+                    google_user_id=microsoft_user_id,  # Reutilizar campo google_user_id temporariamente
+                    hubspot_user_id=None
+                )
+                db.session.add(admin_user)
+                organization_id = str(org.id)
+        else:
+            # Organização já existe, verificar se usuário existe
+            org = Organization.query.filter_by(id=organization_id).first_or_404()
+            existing_user = User.query.filter_by(
+                organization_id=organization_id,
+                email=microsoft_email
+            ).first()
+            
+            if not existing_user:
+                # Criar usuário (primeiro usuário vira admin se não houver admin)
+                admin_count = User.query.filter_by(
+                    organization_id=organization_id,
+                    role='admin'
+                ).count()
+                
+                user_role = 'admin' if admin_count == 0 else 'user'
+                
+                new_user = User(
+                    organization_id=organization_id,
+                    email=microsoft_email,
+                    name=microsoft_name,
+                    role=user_role,
+                    google_user_id=microsoft_user_id  # Reutilizar campo google_user_id temporariamente
+                )
+                db.session.add(new_user)
         
-        # Criar ou atualizar conexão
+        # Validar que organization_id existe
+        if not organization_id:
+            if request.method == 'GET':
+                return redirect("/login?error=organization_creation_failed")
+            return jsonify({'error': 'organization_id is required'}), 400
+        
+        # Garantir que organization_id seja UUID
+        try:
+            organization_id_uuid = uuid.UUID(organization_id) if isinstance(organization_id, str) else organization_id
+        except (ValueError, AttributeError):
+            if request.method == 'GET':
+                return redirect("/login?error=invalid_organization_id")
+            return jsonify({'error': 'Invalid organization_id format'}), 400
+        
+        # Criar ou atualizar conexão Microsoft
         connection = DataSourceConnection.query.filter_by(
-            organization_id=organization_id,
+            organization_id=organization_id_uuid,
             source_type='microsoft'
         ).first()
         
@@ -224,8 +354,8 @@ def callback():
             'access_token': access_token,
             'refresh_token': refresh_token,
             'expires_at': expires_at.isoformat(),
-            'user_email': user_info.get('mail') or user_info.get('userPrincipalName'),
-            'user_name': user_info.get('displayName'),
+            'user_email': microsoft_email,
+            'user_name': microsoft_name,
         }
         
         encrypted_credentials = encrypt_credentials(credentials_data)
@@ -236,9 +366,9 @@ def callback():
             connection.updated_at = datetime.utcnow()
         else:
             connection = DataSourceConnection(
-                organization_id=organization_id,
+                organization_id=organization_id_uuid,
                 source_type='microsoft',
-                name=f'Microsoft ({user_info.get("displayName", "User")})',
+                name=f'Microsoft ({microsoft_name or "User"})',
                 credentials={'encrypted': encrypted_credentials},
                 status='active'
             )
@@ -246,27 +376,85 @@ def callback():
         
         db.session.commit()
         
-        # Redirecionar para frontend se fornecido
-        frontend_redirect_uri = request.args.get('frontend_redirect_uri')
-        if frontend_redirect_uri:
-            return redirect(f"{frontend_redirect_uri}?success=true&organization_id={organization_id}")
+        # Se for GET (redirecionamento do Microsoft), redirecionar para frontend
+        if request.method == 'GET':
+            if frontend_redirect_uri:
+                params = {
+                    'organization_id': str(organization_id),
+                    'email': microsoft_email,
+                    'name': microsoft_name
+                }
+                redirect_url = f"{frontend_redirect_uri}?{urlencode(params)}"
+                logger.info(f"Redirecionando para frontend: {redirect_url}")
+                return redirect(redirect_url)
+            
+            # Caso contrário, mostrar página de sucesso
+            return f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Autorização Concluída</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        height: 100vh;
+                        margin: 0;
+                        background: #f5f5f5;
+                    }}
+                    .container {{
+                        background: white;
+                        padding: 40px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                        text-align: center;
+                        max-width: 400px;
+                    }}
+                    h1 {{
+                        color: #0078d4;
+                        margin-bottom: 20px;
+                    }}
+                    p {{
+                        color: #666;
+                        margin-bottom: 10px;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>✓ Autorização Concluída!</h1>
+                    <p>Conta Microsoft conectada com sucesso.</p>
+                    <p><strong>Organization ID:</strong> {str(organization_id)}</p>
+                    <p><strong>Email:</strong> {microsoft_email}</p>
+                    <p style="margin-top: 20px; font-size: 14px; color: #999;">Você pode fechar esta janela.</p>
+                </div>
+            </body>
+            </html>
+            """, 200
         
+        # Se for POST, retornar JSON
         return jsonify({
             'success': True,
+            'message': 'Microsoft account connected successfully',
             'organization_id': str(organization_id),
-            'connection_id': str(connection.id),
             'user': {
-                'email': credentials_data['user_email'],
-                'name': credentials_data['user_name']
+                'email': microsoft_email,
+                'name': microsoft_name
             }
         })
         
     except requests.exceptions.RequestException as e:
         logger.exception(f'Erro ao trocar código por token: {str(e)}')
+        if request.method == 'GET':
+            return redirect(f"/login?error={str(e)}")
         return jsonify({'error': f'Erro ao autenticar: {str(e)}'}), 500
     except Exception as e:
         logger.exception(f'Erro inesperado no callback: {str(e)}')
         db.session.rollback()
+        if request.method == 'GET':
+            return redirect(f"/login?error={str(e)}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -346,6 +534,57 @@ def status():
             'connected': False,
             'message': str(e)
         })
+
+
+def get_microsoft_credentials(organization_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Obtém credenciais Microsoft para uma organização.
+    
+    Args:
+        organization_id: ID da organização
+        
+    Returns:
+        Dict com credenciais (access_token, refresh_token, expires_at, user_email) ou None
+    """
+    from app.models import DataSourceConnection
+    
+    connection = DataSourceConnection.query.filter_by(
+        organization_id=organization_id,
+        source_type='microsoft',
+        status='active'
+    ).first()
+    
+    if not connection:
+        return None
+    
+    try:
+        credentials = connection.get_decrypted_credentials()
+        access_token = credentials.get('access_token')
+        
+        if not access_token:
+            return None
+        
+        # Verificar se token expirou e renovar se necessário
+        expires_at_str = credentials.get('expires_at')
+        if expires_at_str:
+            expires_at = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+            if expires_at < datetime.utcnow():
+                # Tentar refresh
+                refreshed = _refresh_microsoft_token(connection)
+                if not refreshed:
+                    return None
+                credentials = connection.get_decrypted_credentials()
+                access_token = credentials.get('access_token')
+        
+        return {
+            'access_token': access_token,
+            'refresh_token': credentials.get('refresh_token'),
+            'expires_at': credentials.get('expires_at'),
+            'user_email': credentials.get('user_email'),
+        }
+    except Exception as e:
+        logger.exception(f'Erro ao obter credenciais Microsoft: {str(e)}')
+        return None
 
 
 def _refresh_microsoft_token(connection: DataSourceConnection) -> bool:
