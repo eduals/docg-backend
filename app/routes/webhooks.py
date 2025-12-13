@@ -3,12 +3,17 @@ Rotas para webhooks - endpoints públicos e de teste para webhook triggers.
 """
 from flask import Blueprint, request, jsonify, g
 from app.database import db
-from app.models import Workflow, WorkflowNode, WorkflowExecution
+from app.models import Workflow, WorkflowNode, WorkflowExecution, Organization
 from app.services.workflow_executor import WorkflowExecutor
 from app.utils.auth import require_auth, require_org
+from app.config import Config
 import logging
 import secrets
+import stripe
 from datetime import datetime
+
+# Configurar Stripe
+stripe.api_key = Config.STRIPE_SECRET_KEY
 
 logger = logging.getLogger(__name__)
 webhooks_bp = Blueprint('webhooks', __name__, url_prefix='/api/v1/webhooks')
@@ -308,4 +313,231 @@ def regenerate_webhook_token(workflow_id):
         logger.exception(f'Erro ao regenerar token: {str(e)}')
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
+
+@webhooks_bp.route('/stripe', methods=['POST'])
+def stripe_webhook():
+    """
+    Endpoint para receber webhooks do Stripe.
+    Não requer autenticação - usa assinatura do Stripe para validação.
+    """
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    
+    if not sig_header:
+        logger.warning('Webhook Stripe sem assinatura')
+        return jsonify({'error': 'Missing signature'}), 400
+    
+    try:
+        # Verificar assinatura do webhook
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, Config.STRIPE_WEBHOOK_SECRET
+        )
+    except ValueError as e:
+        logger.error(f'Erro ao parsear payload do Stripe: {str(e)}')
+        return jsonify({'error': 'Invalid payload'}), 400
+    except stripe.error.SignatureVerificationError as e:
+        logger.error(f'Erro ao verificar assinatura do Stripe: {str(e)}')
+        return jsonify({'error': 'Invalid signature'}), 400
+    
+    # Processar evento
+    event_type = event['type']
+    event_data = event['data']['object']
+    
+    logger.info(f'Webhook Stripe recebido: {event_type}')
+    
+    try:
+        if event_type == 'checkout.session.completed':
+            _handle_checkout_completed(event_data)
+        elif event_type == 'customer.subscription.created':
+            _handle_subscription_created(event_data)
+        elif event_type == 'customer.subscription.updated':
+            _handle_subscription_updated(event_data)
+        elif event_type == 'customer.subscription.deleted':
+            _handle_subscription_deleted(event_data)
+        elif event_type == 'invoice.payment_succeeded':
+            _handle_payment_succeeded(event_data)
+        elif event_type == 'invoice.payment_failed':
+            _handle_payment_failed(event_data)
+        else:
+            logger.info(f'Evento Stripe não processado: {event_type}')
+        
+        return jsonify({'received': True}), 200
+        
+    except Exception as e:
+        logger.exception(f'Erro ao processar webhook Stripe: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+
+def _handle_checkout_completed(session):
+    """Processa checkout.session.completed"""
+    metadata = session.get('metadata', {})
+    organization_id = metadata.get('organization_id')
+    plan_name = metadata.get('plan')
+    is_onboarding = metadata.get('onboarding', 'false').lower() == 'true'
+    
+    if not organization_id or not plan_name:
+        logger.warning(f'Checkout session sem metadata necessário: {session.get("id")}')
+        return
+    
+    try:
+        org = Organization.query.filter_by(id=organization_id).first()
+        if not org:
+            logger.error(f'Organização não encontrada: {organization_id}')
+            return
+        
+        # Buscar subscription do checkout session
+        subscription_id = session.get('subscription')
+        if subscription_id:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            
+            subscription_data = {
+                'subscription_id': subscription.id,
+                'current_period_end': subscription.current_period_end,
+                'billing_cycle_anchor': subscription.billing_cycle_anchor,
+                'status': subscription.status,
+            }
+            
+            # Atualizar organização com dados do plano
+            org.update_plan_from_stripe(plan_name, subscription_data)
+            
+            logger.info(f'Organização {organization_id} atualizada com plano {plan_name}')
+        else:
+            logger.warning(f'Checkout session sem subscription: {session.get("id")}')
+            
+    except Exception as e:
+        logger.exception(f'Erro ao processar checkout completed: {str(e)}')
+        raise
+
+
+def _handle_subscription_created(subscription):
+    """Processa customer.subscription.created"""
+    # Similar ao checkout completed, mas pode ser chamado separadamente
+    customer_id = subscription.get('customer')
+    if customer_id:
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            organization_id = customer.metadata.get('organization_id')
+            
+            if organization_id:
+                org = Organization.query.filter_by(id=organization_id).first()
+                if org and org.stripe_customer_id == customer_id:
+                    # Subscription já foi processada no checkout, apenas log
+                    logger.info(f'Subscription criada para organização {organization_id}')
+        except Exception as e:
+            logger.exception(f'Erro ao processar subscription created: {str(e)}')
+
+
+def _handle_subscription_updated(subscription):
+    """Processa customer.subscription.updated"""
+    customer_id = subscription.get('customer')
+    if customer_id:
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            organization_id = customer.metadata.get('organization_id')
+            
+            if organization_id:
+                org = Organization.query.filter_by(id=organization_id).first()
+                if org and org.stripe_customer_id == customer_id:
+                    # Atualizar subscription_id se mudou
+                    if org.stripe_subscription_id != subscription.id:
+                        org.stripe_subscription_id = subscription.id
+                    
+                    # Verificar se plano mudou (através do price_id)
+                    items = subscription.get('items', {}).get('data', [])
+                    if items:
+                        price_id = items[0].get('price', {}).get('id')
+                        # Buscar plano pelo price_id
+                        from app.services.stripe_service import PLAN_CONFIG
+                        plan_name = None
+                        for plan, config in PLAN_CONFIG.items():
+                            if config.get('price_id') == price_id:
+                                plan_name = plan
+                                break
+                        
+                        if plan_name and org.plan != plan_name:
+                            subscription_data = {
+                                'subscription_id': subscription.id,
+                                'current_period_end': subscription.current_period_end,
+                                'billing_cycle_anchor': subscription.billing_cycle_anchor,
+                                'status': subscription.status,
+                            }
+                            org.update_plan_from_stripe(plan_name, subscription_data)
+                            logger.info(f'Plano atualizado para {plan_name} na organização {organization_id}')
+                    
+                    db.session.commit()
+        except Exception as e:
+            logger.exception(f'Erro ao processar subscription updated: {str(e)}')
+            db.session.rollback()
+
+
+def _handle_subscription_deleted(subscription):
+    """Processa customer.subscription.deleted"""
+    customer_id = subscription.get('customer')
+    if customer_id:
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            organization_id = customer.metadata.get('organization_id')
+            
+            if organization_id:
+                org = Organization.query.filter_by(id=organization_id).first()
+                if org and org.stripe_customer_id == customer_id:
+                    # Rebaixar para free
+                    org.plan = 'free'
+                    org.stripe_subscription_id = None
+                    org.users_limit = 1
+                    org.documents_limit = 10
+                    org.workflows_limit = 5
+                    org.plan_expires_at = None
+                    db.session.commit()
+                    logger.info(f'Organização {organization_id} rebaixada para free')
+        except Exception as e:
+            logger.exception(f'Erro ao processar subscription deleted: {str(e)}')
+            db.session.rollback()
+
+
+def _handle_payment_succeeded(invoice):
+    """Processa invoice.payment_succeeded"""
+    subscription_id = invoice.get('subscription')
+    if subscription_id:
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            customer_id = subscription.get('customer')
+            customer = stripe.Customer.retrieve(customer_id)
+            organization_id = customer.metadata.get('organization_id')
+            
+            if organization_id:
+                org = Organization.query.filter_by(id=organization_id).first()
+                if org:
+                    # Renovar assinatura - atualizar plan_expires_at
+                    if subscription.current_period_end:
+                        from datetime import datetime
+                        org.plan_expires_at = datetime.fromtimestamp(subscription.current_period_end)
+                        org.is_active = True
+                        db.session.commit()
+                        logger.info(f'Pagamento bem-sucedido para organização {organization_id}')
+        except Exception as e:
+            logger.exception(f'Erro ao processar payment succeeded: {str(e)}')
+            db.session.rollback()
+
+
+def _handle_payment_failed(invoice):
+    """Processa invoice.payment_failed"""
+    subscription_id = invoice.get('subscription')
+    if subscription_id:
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            customer_id = subscription.get('customer')
+            customer = stripe.Customer.retrieve(customer_id)
+            organization_id = customer.metadata.get('organization_id')
+            
+            if organization_id:
+                org = Organization.query.filter_by(id=organization_id).first()
+                if org:
+                    # Marcar como inativo ou notificar
+                    # Por enquanto apenas log, pode implementar notificação depois
+                    logger.warning(f'Pagamento falhou para organização {organization_id}')
+                    # TODO: Enviar notificação por email
+        except Exception as e:
+            logger.exception(f'Erro ao processar payment failed: {str(e)}')
 

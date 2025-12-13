@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, g, current_app
 from app.database import db
-from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection, WorkflowNode, WorkflowExecution
+from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection, WorkflowNode, WorkflowExecution, Organization
 from app.utils.auth import require_auth, require_org, require_admin
 from app.utils.hubspot_auth import flexible_hubspot_auth
 import logging
@@ -160,6 +160,15 @@ def create_workflow():
         if not is_valid:
             return jsonify({'error': error_msg}), 400
     
+    # Verificar limite de workflows
+    org = Organization.query.filter_by(id=g.organization_id).first()
+    if org and not org.can_create_workflow():
+        limit = org.workflows_limit
+        used = org.workflows_used
+        return jsonify({
+            'error': f'Limite de workflows atingido ({used}/{limit}). Faça upgrade do plano para criar mais workflows.'
+        }), 403
+    
     # Criar workflow (estrutura simplificada)
     workflow = Workflow(
         organization_id=g.organization_id,
@@ -197,6 +206,11 @@ def create_workflow():
         trigger_node.generate_webhook_token()
     
     db.session.add(trigger_node)
+    
+    # Incrementar contador de workflows
+    if org:
+        org.increment_workflow_count()
+    
     db.session.commit()
     
     return jsonify({

@@ -102,6 +102,83 @@ def update_organization(organization_id):
     })
 
 
+@organizations_bp.route('/me', methods=['GET'])
+@require_auth
+@require_org
+def get_my_organization():
+    """Retorna organização do usuário atual com limites e uso"""
+    try:
+        org = Organization.query.filter_by(id=g.organization_id).first_or_404()
+        return jsonify(org.to_dict(include_limits=True)), 200
+    except Exception as e:
+        logger.exception(f'Erro ao buscar organização: {str(e)}')
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
+
+
+@organizations_bp.route('/me', methods=['PUT'])
+@require_auth
+@require_org
+@require_admin
+def update_my_organization():
+    """Atualiza dados da organização do usuário atual"""
+    try:
+        org = Organization.query.filter_by(id=g.organization_id).first_or_404()
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Body é obrigatório'}), 400
+        
+        # Atualizar campos permitidos
+        allowed_fields = ['name', 'billing_email', 'onboarding_data']
+        
+        for field in allowed_fields:
+            if field in data:
+                setattr(org, field, data[field])
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'organization': org.to_dict(include_limits=True)
+        }), 200
+        
+    except Exception as e:
+        logger.exception(f'Erro ao atualizar organização: {str(e)}')
+        db.session.rollback()
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
+
+
+@organizations_bp.route('/me/complete-onboarding', methods=['POST'])
+@require_auth
+@require_org
+@require_admin
+def complete_onboarding():
+    """Marca onboarding como completo"""
+    try:
+        org = Organization.query.filter_by(id=g.organization_id).first_or_404()
+        org.onboarding_completed = True
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'organization': org.to_dict(include_limits=True)
+        }), 200
+        
+    except Exception as e:
+        logger.exception(f'Erro ao completar onboarding: {str(e)}')
+        db.session.rollback()
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
+
+
 @organizations_bp.route('/<organization_id>/status', methods=['GET'])
 @require_auth
 @require_org
