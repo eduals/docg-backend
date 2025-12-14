@@ -1,6 +1,7 @@
 from flask import Flask
 from flask_cors import CORS
 from flask_migrate import Migrate
+import os
 from app.config import Config
 from app.database import db, init_db
 
@@ -8,8 +9,24 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
     
-    # Inicializar CORS
-    CORS(app)
+    # Configurar CORS
+    # Permitir origins do frontend (localhost para dev e produção)
+    allowed_origins = [
+        'http://localhost:5173',  # Vite dev server
+        'http://localhost:3000',  # Alternativa
+        'https://docg.pipehub.co',  # Produção
+    ]
+    
+    # Adicionar origins de variável de ambiente se existir
+    env_origins = os.getenv('CORS_ORIGINS', '')
+    if env_origins:
+        allowed_origins.extend([origin.strip() for origin in env_origins.split(',')])
+    
+    CORS(app,
+         resources={r"/api/*": {"origins": allowed_origins}},
+         supports_credentials=False,  # Não precisa de credentials com Bearer token
+         allow_headers=["Content-Type", "Authorization", "X-Organization-ID", "X-User-Email"],
+         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     
     # Inicializar banco de dados
     db.init_app(app)
