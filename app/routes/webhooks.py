@@ -541,3 +541,91 @@ def _handle_payment_failed(invoice):
         except Exception as e:
             logger.exception(f'Erro ao processar payment failed: {str(e)}')
 
+
+@webhooks_bp.route('/signature/<provider>', methods=['POST'])
+def handle_signature_webhook(provider):
+    """
+    Endpoint único para webhooks de assinatura.
+    
+    Providers suportados: clicksign, zapsign
+    """
+    from app.services.integrations.signature.factory import SignatureProviderFactory
+    from app.services.integrations.signature.base import SignatureStatus
+    from app.models import SignatureRequest, DataSourceConnection
+    
+    provider = provider.lower()
+    
+    if not SignatureProviderFactory.is_provider_supported(provider):
+        return jsonify({'error': f'Provider {provider} não suportado'}), 400
+    
+    try:
+        payload = request.get_json()
+        if not payload:
+            return jsonify({'error': 'Payload vazio'}), 400
+        
+        # Extrair envelope_id do payload baseado no provider
+        if provider == 'clicksign':
+            envelope_id = payload.get('event', {}).get('data', {}).get('id')
+        elif provider == 'zapsign':
+            envelope_id = payload.get('doc_id')
+        else:
+            return jsonify({'error': 'Provider não suportado'}), 400
+        
+        if not envelope_id:
+            return jsonify({'error': 'envelope_id não encontrado no payload'}), 400
+        
+        # Buscar SignatureRequest
+        signature_request = SignatureRequest.query.filter_by(
+            external_id=envelope_id,
+            provider=provider
+        ).first()
+        
+        if not signature_request:
+            logger.warning(f"SignatureRequest não encontrado para {provider} envelope {envelope_id}")
+            return jsonify({'error': 'SignatureRequest não encontrado'}), 404
+        
+        # Buscar conexão para obter adapter
+        connection = DataSourceConnection.query.filter_by(
+            organization_id=signature_request.organization_id,
+            source_type=provider,
+            status='active'
+        ).first()
+        
+        if not connection:
+            logger.error(f"Conexão {provider} não encontrada para organização {signature_request.organization_id}")
+            return jsonify({'error': 'Conexão não encontrada'}), 404
+        
+        # Obter adapter
+        adapter = SignatureProviderFactory.get_adapter(
+            provider=provider,
+            connection_id=str(connection.id),
+            organization_id=str(signature_request.organization_id)
+        )
+        
+        # Verificar assinatura do webhook
+        if not adapter.verify_webhook_signature(request):
+            logger.warning(f"Assinatura de webhook inválida para {provider}")
+            return jsonify({'error': 'Assinatura inválida'}), 401
+        
+        # Parse evento
+        event = adapter.parse_webhook_event(payload)
+        
+        # Atualizar SignatureRequest
+        signature_request.status = event['status'].value
+        if event['status'] == SignatureStatus.SIGNED:
+            signature_request.completed_at = event['timestamp']
+        elif event['status'] == SignatureStatus.CANCELED:
+            signature_request.completed_at = event['timestamp']
+        
+        signature_request.webhook_data = payload
+        db.session.commit()
+        
+        logger.info(f"Webhook processado: {provider} - {event['event_type']} - {envelope_id}")
+        
+        return jsonify({'success': True, 'event': event})
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar webhook {provider}: {str(e)}")
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+

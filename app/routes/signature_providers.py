@@ -282,6 +282,55 @@ def test_provider_connection(provider_id):
                     'message': f'Erro de conexão: {str(e)}'
                 }), 500
         
+        elif provider_id == 'zapsign':
+            import requests
+            base_url = "https://api.zapsign.com.br/api/v1"
+            test_url = f"{base_url}/docs/"
+            
+            try:
+                response = requests.get(
+                    test_url,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    params={"page": 1, "limit": 1},
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    return jsonify({
+                        'valid': True,
+                        'provider': provider_id,
+                        'message': 'API token válido'
+                    })
+                elif response.status_code == 401:
+                    return jsonify({
+                        'valid': False,
+                        'provider': provider_id,
+                        'message': 'API token inválido ou expirado'
+                    }), 400
+                else:
+                    return jsonify({
+                        'valid': False,
+                        'provider': provider_id,
+                        'message': f'Erro ao testar conexão: {response.status_code}'
+                    }), 400
+            except requests.exceptions.Timeout:
+                logger.error("Timeout ao conectar com a API do ZapSign")
+                return jsonify({
+                    'valid': False,
+                    'provider': provider_id,
+                    'message': 'Timeout ao conectar com a API do ZapSign'
+                }), 500
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Erro de requisição ao testar ZapSign: {str(e)}")
+                return jsonify({
+                    'valid': False,
+                    'provider': provider_id,
+                    'message': f'Erro de conexão: {str(e)}'
+                }), 500
+        
         # Para outros provedores, implementar testes específicos
         # Por enquanto, retornar que precisa implementação
         return jsonify({

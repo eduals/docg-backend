@@ -1218,62 +1218,126 @@ class HumanInLoopNodeExecutor(NodeExecutor):
         return context
 
 
-class ClicksignNodeExecutor(NodeExecutor):
-    """Executor para Clicksign nodes"""
+class SignatureNodeExecutor(NodeExecutor):
+    """Executor genérico para nodes de assinatura"""
     
     def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
-        """Envia documento para assinatura no Clicksign"""
+        """Executa node de assinatura usando adapter do provider"""
         config = node.config or {}
+        provider = config.get('provider', 'clicksign')  # Default para compatibilidade
         connection_id = config.get('connection_id')
         recipients = config.get('recipients', [])
+        message = config.get('message')
         document_source = config.get('document_source', 'previous_node')
         
+        # Validações
         if not connection_id:
-            raise ValueError('connection_id não configurado no Clicksign node')
+            raise ValueError('connection_id não configurado no node de assinatura')
         
         if not recipients:
-            raise ValueError('recipients não configurado no Clicksign node')
+            raise ValueError('recipients não configurado no node de assinatura')
         
         # Buscar documento
-        document = None
-        if document_source == 'previous_node' and context.generated_documents:
-            # Usar último documento gerado
-            last_doc = context.generated_documents[-1]
-            document_id = last_doc.get('document_id')
-            if document_id:
-                document = GeneratedDocument.query.get(document_id)
-        elif document_source == 'specific_document_id':
-            document_id = config.get('document_id')
-            if document_id:
-                document = GeneratedDocument.query.get(document_id)
-        
+        document = self._get_document(context, config, document_source)
         if not document:
             raise ValueError('Documento não encontrado para envio de assinatura')
         
-        if not document.pdf_file_id:
-            raise ValueError('Documento não possui PDF gerado')
+        # Obter adapter via factory
+        from app.services.integrations.signature.factory import SignatureProviderFactory
+        from app.models import Workflow
         
-        # Buscar conexão Clicksign
-        from app.models import DataSourceConnection
-        connection = DataSourceConnection.query.get(connection_id)
-        if not connection or connection.source_type != 'clicksign':
-            raise ValueError(f'Conexão Clicksign não encontrada: {connection_id}')
+        # Buscar workflow para obter organization_id
+        workflow = Workflow.query.get(context.workflow_id)
+        if not workflow:
+            raise ValueError(f'Workflow não encontrado: {context.workflow_id}')
         
-        # TODO: Implementar integração com Clicksign
-        # Por enquanto, apenas registrar no context
+        adapter = SignatureProviderFactory.get_adapter(
+            provider=provider,
+            connection_id=connection_id,
+            organization_id=str(workflow.organization_id)
+        )
+        
+        # Enviar para assinatura
+        signature_request = adapter.send_document_for_signature(
+            document=document,
+            signers=recipients,
+            message=message
+        )
+        
+        # Adicionar ao context
         context.signature_requests.append({
-            'node_id': str(node.id),
-            'document_id': str(document.id),
-            'connection_id': str(connection_id),
-            'recipients': recipients,
-            'status': 'pending'
+            'signature_request_id': str(signature_request.id),
+            'provider': provider,
+            'external_id': signature_request.external_id,
+            'external_url': signature_request.external_url
         })
         
         context.metadata['current_node_position'] = node.position
         
-        logger.info(f"Clicksign node executado: documento {document.id} preparado para assinatura")
+        logger.info(
+            f"Signature node executado: documento {document.id} enviado para assinatura "
+            f"via {provider} (envelope: {signature_request.external_id})"
+        )
         
         return context
+    
+    def _get_document(
+        self,
+        context: ExecutionContext,
+        config: dict,
+        document_source: str
+    ) -> Optional[GeneratedDocument]:
+        """
+        Busca documento baseado na configuração do node.
+        
+        Opções de document_source:
+        - 'previous_node': Usa o último documento gerado no workflow
+        - 'specific_node': Usa documento de um node específico (document_node_id)
+        - 'specific_document': Usa um documento específico por ID (document_id)
+        """
+        if document_source == 'previous_node':
+            # Usar último documento gerado que tenha PDF
+            if context.generated_documents:
+                # Buscar do último para o primeiro, pegando o primeiro que tenha PDF
+                for doc_info in reversed(context.generated_documents):
+                    document_id = doc_info.get('document_id')
+                    pdf_file_id = doc_info.get('pdf_file_id')
+                    
+                    if document_id and pdf_file_id:
+                        document = GeneratedDocument.query.get(document_id)
+                        if document and document.pdf_file_id:
+                            return document
+                
+                # Se nenhum tem PDF, pegar o último mesmo (pode exportar depois)
+                last_doc = context.generated_documents[-1]
+                document_id = last_doc.get('document_id')
+                if document_id:
+                    return GeneratedDocument.query.get(document_id)
+        
+        elif document_source == 'specific_node':
+            # Buscar documento de node específico
+            node_id = config.get('document_node_id')
+            if node_id:
+                # Buscar no context pelo node_id
+                for doc_info in context.generated_documents:
+                    if doc_info.get('node_id') == node_id:
+                        document_id = doc_info.get('document_id')
+                        if document_id:
+                            return GeneratedDocument.query.get(document_id)
+        
+        elif document_source == 'specific_document':
+            # Usar documento específico por ID
+            document_id = config.get('document_id')
+            if document_id:
+                return GeneratedDocument.query.get(document_id)
+        
+        return None
+
+
+# Manter ClicksignNodeExecutor para compatibilidade (delega para SignatureNodeExecutor)
+class ClicksignNodeExecutor(SignatureNodeExecutor):
+    """Executor para Clicksign nodes (compatibilidade - delega para SignatureNodeExecutor)"""
+    pass
 
 
 class WebhookNodeExecutor(NodeExecutor):
@@ -1338,7 +1402,8 @@ class WorkflowExecutor:
             'gmail': GmailEmailNodeExecutor(),
             'outlook': OutlookEmailNodeExecutor(),
             'human-in-loop': HumanInLoopNodeExecutor(),
-            'clicksign': ClicksignNodeExecutor(),
+            'signature': SignatureNodeExecutor(),  # NOVO: genérico
+            'clicksign': ClicksignNodeExecutor(),  # COMPATIBILIDADE: mapear para signature
             'webhook': WebhookNodeExecutor()
         }
     
