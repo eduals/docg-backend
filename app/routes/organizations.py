@@ -3,6 +3,7 @@ from app.database import db
 from app.models import Organization
 from app.utils.auth import require_auth, require_org, require_admin
 from app.config import Config
+from app.services.stripe_service import get_subscription_info
 from datetime import datetime
 import logging
 import re
@@ -46,12 +47,21 @@ def create_organization():
         counter += 1
     
     # Criar organização
+    plan_name = data.get('plan', 'free')
     org = Organization(
         name=data['name'],
         slug=slug,
-        plan=data.get('plan', 'free'),
+        plan=plan_name,
         billing_email=data.get('billing_email')
     )
+    
+    # Aplicar limites do plano
+    from app.services.stripe_service import PLAN_CONFIG
+    plan_config = PLAN_CONFIG.get(plan_name, {})
+    if plan_config:
+        org.users_limit = plan_config.get('users_limit', org.users_limit)
+        org.documents_limit = plan_config.get('documents_limit', org.documents_limit)
+        org.workflows_limit = plan_config.get('workflows_limit', org.workflows_limit)
     
     db.session.add(org)
     db.session.commit()
@@ -106,10 +116,57 @@ def update_organization(organization_id):
 @require_auth
 @require_org
 def get_my_organization():
-    """Retorna organização do usuário atual com limites e uso"""
+    """Retorna organização do usuário atual com limites, uso e informações da assinatura"""
     try:
         org = Organization.query.filter_by(id=g.organization_id).first_or_404()
-        return jsonify(org.to_dict(include_limits=True)), 200
+        
+        # Sincronizar contador de workflows com contagem real (para manter consistência)
+        from app.models import Workflow
+        real_workflows_count = Workflow.query.filter_by(organization_id=org.id).count()
+        if org.workflows_used != real_workflows_count:
+            org.workflows_used = real_workflows_count
+        
+        # Garantir que limites estejam definidos baseado no plano
+        from app.services.stripe_service import PLAN_CONFIG
+        plan_config = PLAN_CONFIG.get(org.plan, {})
+        if plan_config:
+            # Aplicar limites se não estiverem definidos ou se forem None
+            if org.users_limit is None and 'users_limit' in plan_config:
+                org.users_limit = plan_config.get('users_limit')
+            if org.documents_limit is None and 'documents_limit' in plan_config:
+                org.documents_limit = plan_config.get('documents_limit')
+            if org.workflows_limit is None and 'workflows_limit' in plan_config:
+                org.workflows_limit = plan_config.get('workflows_limit')
+        
+        db.session.commit()
+        
+        org_dict = org.to_dict(include_limits=True)
+        
+        # Buscar informações da assinatura do Stripe se houver
+        subscription_info = None
+        if org.stripe_subscription_id:
+            subscription_data = get_subscription_info(org.stripe_subscription_id)
+            if subscription_data:
+                # Formatar informações da assinatura
+                from datetime import datetime
+                subscription_info = {
+                    'status': subscription_data['status'],
+                    'current_period_end': datetime.fromtimestamp(subscription_data['current_period_end']).isoformat() if subscription_data.get('current_period_end') else None,
+                    'cancel_at_period_end': subscription_data.get('cancel_at_period_end', False),
+                    'cancel_at': datetime.fromtimestamp(subscription_data['cancel_at']).isoformat() if subscription_data.get('cancel_at') else None,
+                    'trial_end': datetime.fromtimestamp(subscription_data['trial_end']).isoformat() if subscription_data.get('trial_end') else None,
+                }
+                
+                # Adicionar informações do preço se disponível
+                if subscription_data.get('price'):
+                    price = subscription_data['price']
+                    subscription_info['amount'] = price.get('unit_amount', 0)
+                    subscription_info['currency'] = price.get('currency', 'brl')
+                    subscription_info['interval'] = price.get('interval', 'month')
+        
+        org_dict['subscription_info'] = subscription_info
+        
+        return jsonify(org_dict), 200
     except Exception as e:
         logger.exception(f'Erro ao buscar organização: {str(e)}')
         return jsonify({

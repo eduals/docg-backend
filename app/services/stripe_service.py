@@ -10,9 +10,18 @@ stripe.api_key = Config.STRIPE_SECRET_KEY
 
 # Configuração de planos
 PLAN_CONFIG = {
+    'free': {
+        'product_id': None,
+        'price_id': None,
+        'users_limit': 1,
+        'documents_limit': 10,
+        'workflows_limit': 5,
+    },
     'starter': {
-        'product_id': 'prod_Tb764p2NUbTPwe',
-        'price_id': 'price_1SduroHBxNwn6RMGjXIgE6xu',  # Encontrado
+        # 'product_id': 'prod_Tb764p2NUbTPwe',
+        'product_id': 'prod_Tb6mHHRviDCYSy',
+        'price_id': 'price_1SduYiHBxNwn6RMGFRZ4AU94',  # Encontrado
+        # 'price_id': 'price_1SduroHBxNwn6RMGjXIgE6xu',  # Encontrado
         'users_limit': 3,
         'documents_limit': 50,
         'workflows_limit': 5,
@@ -132,3 +141,60 @@ def create_checkout_session(customer_id, price_id, organization_id, plan_name, i
     )
     
     return session
+
+
+def create_customer_portal_session(customer_id, return_url):
+    """
+    Cria uma sessão do Customer Portal do Stripe
+    
+    Args:
+        customer_id: ID do customer no Stripe
+        return_url: URL para retornar após gerenciar assinatura
+    
+    Returns:
+        portal_session: Objeto da sessão do portal
+    """
+    session = stripe.billing_portal.Session.create(
+        customer=customer_id,
+        return_url=return_url,
+    )
+    return session
+
+
+def get_subscription_info(subscription_id):
+    """
+    Busca informações detalhadas de uma subscription no Stripe
+    
+    Args:
+        subscription_id: ID da subscription no Stripe
+    
+    Returns:
+        subscription: Objeto da subscription com informações formatadas
+    """
+    try:
+        subscription = stripe.Subscription.retrieve(subscription_id)
+        
+        # Extrair informações do price
+        price_info = None
+        if subscription.items.data:
+            price = subscription.items.data[0].price
+            price_info = {
+                'id': price.id,
+                'unit_amount': price.unit_amount,
+                'currency': price.currency,
+                'interval': price.recurring.interval if price.recurring else None,
+            }
+        
+        return {
+            'id': subscription.id,
+            'status': subscription.status,
+            'current_period_start': subscription.current_period_start,
+            'current_period_end': subscription.current_period_end,
+            'cancel_at_period_end': subscription.cancel_at_period_end,
+            'cancel_at': subscription.cancel_at,
+            'trial_end': subscription.trial_end,
+            'trial_start': subscription.trial_start,
+            'price': price_info,
+        }
+    except stripe.error.InvalidRequestError:
+        return None

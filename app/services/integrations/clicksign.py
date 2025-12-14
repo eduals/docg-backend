@@ -13,8 +13,6 @@ class ClickSignIntegration(BaseIntegration):
     Usa DataSourceConnection para gerenciar credenciais.
     """
     
-    BASE_URL = "https://sandbox.clicksign.com/api/v3"
-    
     def __init__(self, organization_id: str):
         super().__init__(organization_id)
         self._load_config()
@@ -39,6 +37,20 @@ class ClickSignIntegration(BaseIntegration):
         
         if not self.api_key:
             raise Exception('API Key do ClickSign não configurada na conexão')
+        
+        # Determinar ambiente (sandbox ou production)
+        # Ler do config da conexão, default para sandbox (compatibilidade)
+        environment = 'sandbox'
+        if connection.config:
+            environment = connection.config.get('environment', 'sandbox')
+        
+        # Definir BASE_URL baseado no ambiente
+        if environment == 'production':
+            self.BASE_URL = "https://app.clicksign.com/api/v3"
+        else:  # sandbox (default)
+            self.BASE_URL = "https://sandbox.clicksign.com/api/v3"
+        
+        logger.info(f"ClickSignIntegration inicializado - Ambiente: {environment}, URL: {self.BASE_URL}")
     
     def send_document_for_signature(
         self,

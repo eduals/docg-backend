@@ -164,9 +164,10 @@ def create_workflow():
     org = Organization.query.filter_by(id=g.organization_id).first()
     if org and not org.can_create_workflow():
         limit = org.workflows_limit
-        used = org.workflows_used
+        # Contar workflows reais para mensagem de erro
+        current_count = Workflow.query.filter_by(organization_id=org.id).count()
         return jsonify({
-            'error': f'Limite de workflows atingido ({used}/{limit}). Faça upgrade do plano para criar mais workflows.'
+            'error': f'Limite de workflows atingido ({current_count}/{limit}). Faça upgrade do plano para criar mais workflows.'
         }), 403
     
     # Criar workflow (estrutura simplificada)

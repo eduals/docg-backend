@@ -99,6 +99,10 @@ def create_app(config_class=Config):
     from app.routes import checkout
     app.register_blueprint(checkout.checkout_bp)
     
+    # Rotas de billing (Stripe)
+    from app.routes import billing
+    app.register_blueprint(billing.billing_bp)
+    
     # Rotas de Microsoft OAuth
     from app.routes import microsoft_oauth_routes
     app.register_blueprint(microsoft_oauth_routes.microsoft_oauth_bp)

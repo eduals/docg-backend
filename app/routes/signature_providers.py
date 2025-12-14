@@ -148,7 +148,8 @@ def test_provider_connection(provider_id):
     
     Body:
     {
-        "api_key": "sk-..."
+        "api_key": "sk-...",
+        "environment": "sandbox" | "production"  # Opcional, apenas para ClickSign
     }
     
     Response:
@@ -168,6 +169,7 @@ def test_provider_connection(provider_id):
     
     data = request.get_json()
     api_key = data.get('api_key') if data else None
+    environment = data.get('environment', 'sandbox') if data else 'sandbox'  # Default: sandbox
     
     if not api_key:
         return jsonify({
@@ -178,36 +180,107 @@ def test_provider_connection(provider_id):
     try:
         # Importar serviço de integração apropriado
         if provider_id == 'clicksign':
-            from app.services.integrations.clicksign import ClickSignIntegration
-            
-            # Criar instância temporária para testar
-            # Nota: ClickSignIntegration requer organization_id, mas para teste podemos usar um mock
-            # Vamos fazer uma chamada direta à API do ClickSign
             import requests
             
-            # Testar com uma chamada simples à API do ClickSign
-            test_url = "https://sandbox.clicksign.com/api/v3/accounts"
-            response = requests.get(
-                test_url,
-                headers={
-                    "Authorization": api_key,
-                    "Content-Type": "application/json"
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                return jsonify({
-                    'valid': True,
-                    'provider': provider_id,
-                    'message': 'API key válida'
-                })
-            else:
+            # Validar ambiente
+            if environment not in ['sandbox', 'production']:
                 return jsonify({
                     'valid': False,
                     'provider': provider_id,
-                    'message': f'API key inválida: {response.status_code}'
+                    'error': 'environment deve ser "sandbox" ou "production"'
                 }), 400
+            
+            # Determinar URL baseada no ambiente
+            if environment == 'production':
+                base_url = "https://app.clicksign.com/api/v3"
+            else:  # sandbox
+                base_url = "https://sandbox.clicksign.com/api/v3"
+            
+            # Usar endpoint de listagem de envelopes para testar
+            # Este endpoint é conhecido por funcionar (usado em ClickSignIntegration)
+            test_url = f"{base_url}/envelopes"
+            
+            logger.info(f"Testando conexão ClickSign - Ambiente: {environment}, URL: {test_url}")
+            
+            try:
+                response = requests.get(
+                    test_url,
+                    headers={
+                        "Authorization": api_key,
+                        "Content-Type": "application/json"
+                    },
+                    params={"page": 1, "per_page": 1},  # Limitar a 1 resultado para teste rápido
+                    timeout=10
+                )
+                
+                logger.info(f"Resposta ClickSign - Status: {response.status_code}")
+                
+                # Tratar diferentes códigos de status
+                if response.status_code == 200:
+                    # Verificar se a resposta é válida
+                    try:
+                        data = response.json()
+                        logger.info(f"Resposta ClickSign válida: {type(data)}")
+                        return jsonify({
+                            'valid': True,
+                            'provider': provider_id,
+                            'message': 'API key válida'
+                        })
+                    except ValueError:
+                        # Resposta não é JSON válido
+                        logger.error(f"Resposta ClickSign não é JSON válido: {response.text[:200]}")
+                        return jsonify({
+                            'valid': False,
+                            'provider': provider_id,
+                            'message': 'Resposta inválida da API do ClickSign'
+                        }), 400
+                elif response.status_code == 401:
+                    logger.warning(f"ClickSign retornou 401 - API key inválida")
+                    return jsonify({
+                        'valid': False,
+                        'provider': provider_id,
+                        'message': 'API key inválida ou expirada'
+                    }), 400
+                elif response.status_code == 404:
+                    logger.error(f"ClickSign retornou 404 - Endpoint não encontrado")
+                    return jsonify({
+                        'valid': False,
+                        'provider': provider_id,
+                        'message': 'Endpoint não encontrado. Verifique a configuração da API.'
+                    }), 400
+                else:
+                    # Outros erros
+                    error_msg = f'Erro ao testar conexão: {response.status_code}'
+                    try:
+                        error_data = response.json()
+                        if 'errors' in error_data:
+                            error_msg = error_data['errors'][0].get('detail', error_msg)
+                        elif 'error' in error_data:
+                            error_msg = error_data.get('error', error_msg)
+                    except:
+                        error_msg = f'Erro ao testar conexão: {response.status_code} - {response.text[:200]}'
+                    
+                    logger.error(f"ClickSign retornou erro {response.status_code}: {error_msg}")
+                    return jsonify({
+                        'valid': False,
+                        'provider': provider_id,
+                        'message': error_msg
+                    }), 400
+                    
+            except requests.exceptions.Timeout:
+                logger.error("Timeout ao conectar com a API do ClickSign")
+                return jsonify({
+                    'valid': False,
+                    'provider': provider_id,
+                    'message': 'Timeout ao conectar com a API do ClickSign'
+                }), 500
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Erro de requisição ao testar ClickSign: {str(e)}")
+                return jsonify({
+                    'valid': False,
+                    'provider': provider_id,
+                    'message': f'Erro de conexão: {str(e)}'
+                }), 500
         
         # Para outros provedores, implementar testes específicos
         # Por enquanto, retornar que precisa implementação

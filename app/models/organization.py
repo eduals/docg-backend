@@ -48,13 +48,22 @@ class Organization(db.Model):
     
     def can_create_workflow(self):
         """Verifica se pode criar novo workflow"""
+        from app.models import Workflow
         if self.workflows_limit is None:
             return True
-        return self.workflows_used < self.workflows_limit
+        current_count = Workflow.query.filter_by(organization_id=self.id).count()
+        return current_count < self.workflows_limit
     
     def increment_workflow_count(self):
         """Incrementa contador de workflows (sem commit - commit deve ser feito externamente)"""
         self.workflows_used += 1
+    
+    def sync_workflows_count(self):
+        """Sincroniza workflows_used com a contagem real do banco"""
+        from app.models import Workflow
+        real_count = Workflow.query.filter_by(organization_id=self.id).count()
+        self.workflows_used = real_count
+        db.session.commit()
     
     def update_plan_from_stripe(self, plan_name, subscription_data):
         """Atualiza organização com dados do plano do Stripe"""
@@ -89,11 +98,11 @@ class Organization(db.Model):
     
     def get_usage(self):
         """Retorna uso atual"""
-        from app.models import User
+        from app.models import User, Workflow
         return {
             'users': User.query.filter_by(organization_id=self.id).count(),
             'documents': self.documents_used,
-            'workflows': self.workflows_used,
+            'workflows': Workflow.query.filter_by(organization_id=self.id).count(),
         }
     
     def get_status(self):

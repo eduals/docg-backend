@@ -65,6 +65,28 @@ class EnvelopeCreationService:
         
         return api_key
     
+    def get_clicksign_base_url(self):
+        """Obter URL base do ClickSign baseado no ambiente configurado"""
+        connection = DataSourceConnection.query.filter_by(
+            organization_id=self.organization_id,
+            source_type='clicksign'
+        ).first()
+        
+        if not connection:
+            raise Exception("ClickSign not configured for this organization")
+        
+        # Determinar ambiente (sandbox ou production)
+        # Ler do config da conexão, default para sandbox (compatibilidade)
+        environment = 'sandbox'
+        if connection.config:
+            environment = connection.config.get('environment', 'sandbox')
+        
+        # Retornar URL base baseada no ambiente
+        if environment == 'production':
+            return "https://app.clicksign.com/api/v3"
+        else:  # sandbox (default)
+            return "https://sandbox.clicksign.com/api/v3"
+    
     def update_log(self, step_name, status, message=None, error_message=None, envelope_id=None):
         """Atualizar log de execução"""
         log = EnvelopeExecutionLog.query.filter_by(
@@ -86,7 +108,8 @@ class EnvelopeCreationService:
             self.update_log('Creating envelope', 'in_progress', 'Creating envelope in ClickSign...')
             
             token = self.get_clicksign_token()
-            url = "https://sandbox.clicksign.com/api/v3/envelopes"
+            base_url = self.get_clicksign_base_url()
+            url = f"{base_url}/envelopes"
             
             payload = {
                 "data": {
@@ -146,7 +169,8 @@ class EnvelopeCreationService:
         """Adicionar documento usando template ClickSign"""
         try:
             token = self.get_clicksign_token()
-            url = f"https://sandbox.clicksign.com/api/v3/envelopes/{self.envelope_id}/documents"
+            base_url = self.get_clicksign_base_url()
+            url = f"{base_url}/envelopes/{self.envelope_id}/documents"
             
             payload = {
                 "data": {
@@ -179,7 +203,8 @@ class EnvelopeCreationService:
         """Adicionar documento via upload"""
         try:
             token = self.get_clicksign_token()
-            url = f"https://sandbox.clicksign.com/api/v3/envelopes/{self.envelope_id}/documents"
+            base_url = self.get_clicksign_base_url()
+            url = f"{base_url}/envelopes/{self.envelope_id}/documents"
             
             # Decodificar base64 se necessário
             if isinstance(file_content, str):
@@ -336,7 +361,8 @@ class EnvelopeCreationService:
         """Adicionar signatário ao envelope"""
         try:
             token = self.get_clicksign_token()
-            url = f"https://sandbox.clicksign.com/api/v3/envelopes/{self.envelope_id}/signers"
+            base_url = self.get_clicksign_base_url()
+            url = f"{base_url}/envelopes/{self.envelope_id}/signers"
             
             payload = {
                 "data": {
@@ -395,7 +421,8 @@ class EnvelopeCreationService:
             self.update_log('Sending envelope', 'in_progress', 'Sending envelope...')
             
             token = self.get_clicksign_token()
-            url = f"https://sandbox.clicksign.com/api/v3/envelopes/{self.envelope_id}"
+            base_url = self.get_clicksign_base_url()
+            url = f"{base_url}/envelopes/{self.envelope_id}"
             
             payload = {
                 "data": {
