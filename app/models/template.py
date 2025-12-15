@@ -10,8 +10,8 @@ class Template(db.Model):
     organization_id = db.Column(UUID(as_uuid=True), db.ForeignKey('organizations.id'), nullable=False)
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
-    google_file_id = db.Column(db.String(255), nullable=False)
-    google_file_type = db.Column(db.String(50), nullable=False)  # document, presentation
+    google_file_id = db.Column(db.String(255), nullable=True)  # Pode ser None se for Microsoft
+    google_file_type = db.Column(db.String(50), nullable=True)  # document, presentation - Pode ser None se for Microsoft
     google_file_url = db.Column(db.String(500))
     thumbnail_url = db.Column(db.String(500))
     # Microsoft fields
@@ -38,6 +38,8 @@ class Template(db.Model):
             'google_file_id': self.google_file_id,
             'google_file_type': self.google_file_type,
             'google_file_url': self.google_file_url,
+            'microsoft_file_id': self.microsoft_file_id,
+            'microsoft_file_type': self.microsoft_file_type,
             'thumbnail_url': self.thumbnail_url,
             'version': self.version,
             'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,

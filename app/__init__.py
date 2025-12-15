@@ -138,6 +138,10 @@ def create_app(config_class=Config):
     from app.routes import microsoft_oauth_routes
     app.register_blueprint(microsoft_oauth_routes.microsoft_oauth_bp)
     
+    # Rotas de Microsoft (OneDrive/SharePoint)
+    from app.routes import microsoft_routes
+    app.register_blueprint(microsoft_routes.microsoft_bp)
+    
     # Rotas de aprovações
     from app.routes import approvals
     app.register_blueprint(approvals.approvals_bp)
