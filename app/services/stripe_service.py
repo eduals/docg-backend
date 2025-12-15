@@ -3,7 +3,10 @@ Serviço para integração com Stripe
 Gerencia configuração de planos e funções auxiliares
 """
 import stripe
+import logging
 from app.config import Config
+
+logger = logging.getLogger(__name__)
 
 # Configurar Stripe
 stripe.api_key = Config.STRIPE_SECRET_KEY
@@ -56,9 +59,30 @@ def get_plan_config(plan_name):
 
 
 def get_price_id(plan_name):
-    """Retorna price_id de um plano"""
+    """Retorna price_id de um plano. Se não estiver configurado, tenta buscar do Stripe"""
     config = get_plan_config(plan_name)
-    return config.get('price_id') if config else None
+    if not config:
+        return None
+    
+    price_id = config.get('price_id')
+    
+    # Se price_id não está configurado ou é placeholder, tentar buscar do Stripe
+    if not price_id or price_id == 'price_XXXXX':
+        product_id = config.get('product_id')
+        if product_id:
+            try:
+                # Buscar preços do produto no Stripe
+                prices = stripe.Price.list(product=product_id, active=True, limit=1)
+                if prices.data:
+                    # Pegar o primeiro preço ativo (geralmente mensal)
+                    price_id = prices.data[0].id
+                    # Atualizar o config em memória (não persiste, mas ajuda)
+                    config['price_id'] = price_id
+                    logger.info(f'Price ID encontrado automaticamente para {plan_name}: {price_id}')
+            except Exception as e:
+                logger.warning(f'Erro ao buscar price_id do Stripe para {plan_name}: {str(e)}')
+    
+    return price_id
 
 
 def create_or_get_customer(organization, email, name=None):
@@ -116,11 +140,11 @@ def create_checkout_session(customer_id, price_id, organization_id, plan_name, i
     
     success_url = f"{frontend_url}/onboarding?step=6&session_id={{CHECKOUT_SESSION_ID}}"
     if not is_onboarding:
-        success_url = f"{frontend_url}/dashboard?checkout=success&session_id={{CHECKOUT_SESSION_ID}}"
+        success_url = f"{frontend_url}/settings/billing?checkout=success&session_id={{CHECKOUT_SESSION_ID}}"
     
     cancel_url = f"{frontend_url}/onboarding?step=5&canceled=true"
     if not is_onboarding:
-        cancel_url = f"{frontend_url}/pricing?canceled=true"
+        cancel_url = f"{frontend_url}/settings/billing?canceled=true"
     
     session = stripe.checkout.Session.create(
         customer=customer_id,
