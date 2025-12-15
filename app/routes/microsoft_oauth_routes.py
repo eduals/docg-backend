@@ -376,6 +376,13 @@ def callback():
         
         db.session.commit()
         
+        # Registrar login bem-sucedido
+        try:
+            from app.utils.login_logger import log_successful_login
+            log_successful_login(microsoft_email, organization_id_uuid, 'oauth_microsoft')
+        except Exception as e:
+            logger.error(f"Erro ao registrar login: {str(e)}")
+        
         # Se for GET (redirecionamento do Microsoft), redirecionar para frontend
         if request.method == 'GET':
             if frontend_redirect_uri:

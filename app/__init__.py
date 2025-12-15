@@ -52,6 +52,16 @@ def create_app(config_class=Config):
     from app.routes import organizations
     app.register_blueprint(organizations.organizations_bp)
     
+    # Rotas de segurança (sessões, login history, 2FA, API keys) - registrar ANTES de users para evitar conflito
+    try:
+        from app.routes import security
+        app.register_blueprint(security.security_bp)
+        print(f"[DEBUG] Security blueprint registrado: {security.security_bp.name} com prefix {security.security_bp.url_prefix}")
+    except Exception as e:
+        print(f"[ERROR] Erro ao registrar security blueprint: {e}")
+        import traceback
+        traceback.print_exc()
+    
     from app.routes import users
     app.register_blueprint(users.users_bp)
     
@@ -131,6 +141,10 @@ def create_app(config_class=Config):
     # Rotas de aprovações
     from app.routes import approvals
     app.register_blueprint(approvals.approvals_bp)
+    
+    # Rotas de mapeamentos globais
+    from app.routes import global_field_mappings
+    app.register_blueprint(global_field_mappings.global_field_mappings_bp)
     
     return app
 

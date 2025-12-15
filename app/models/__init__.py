@@ -9,6 +9,15 @@ from .document import GeneratedDocument
 from .signature import SignatureRequest
 from .execution import WorkflowExecution
 from .pkce import PKCEVerifier
+from .user_settings import (
+    UserPreference,
+    UserNotificationPreference,
+    UserSession,
+    LoginHistory,
+    UserTwoFactorAuth,
+    ApiKey,
+    GlobalFieldMapping
+)
 
 # Importar models legados DEPOIS (para evitar importação circular)
 # Usar importação lazy para evitar problemas
@@ -71,13 +80,21 @@ __all__ = [
     'GeneratedDocument',
     'SignatureRequest',
     'WorkflowExecution',
+    'PKCEVerifier',
+    # User settings models
+    'UserPreference',
+    'UserNotificationPreference',
+    'UserSession',
+    'LoginHistory',
+    'UserTwoFactorAuth',
+    'ApiKey',
+    'GlobalFieldMapping',
     # Legacy models
     'FieldMapping',
     'EnvelopeRelation',
     'GoogleOAuthToken',
     'GoogleDriveConfig',
     'EnvelopeExecutionLog',
-    'RiscEvent',
-    'PKCEVerifier'
+    'RiscEvent'
 ]
 

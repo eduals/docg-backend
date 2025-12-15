@@ -4,34 +4,34 @@ overview: Plano revisado para estrutura de dados, layouts e endpoints das págin
 todos:
   - id: create-backend-models
     content: "Criar modelos no backend: UserPreference, UserNotificationPreference, UserSession, LoginHistory, UserTwoFactorAuth, ApiKey, GlobalFieldMapping"
-    status: pending
+    status: completed
   - id: create-backend-endpoints-preferences
     content: Criar endpoints GET/PUT /users/me/preferences
-    status: pending
+    status: completed
   - id: create-backend-endpoints-notifications
     content: Criar endpoints GET/PUT /users/me/notification-preferences
-    status: pending
+    status: completed
   - id: create-backend-endpoints-security
     content: "Criar endpoints de segurança: sessions, login-history, 2FA, API keys"
-    status: pending
+    status: completed
   - id: implement-login-logging
     content: Implementar logging de login em auth.py para registrar no LoginHistory
-    status: pending
+    status: completed
   - id: implement-2fa-backend
     content: Implementar 2FA no backend usando pyotp (gerar secret, QR code, verificar código)
-    status: pending
+    status: completed
   - id: implement-api-keys-backend
     content: Implementar geração de API keys com prefixo dg_ e hash
-    status: pending
+    status: completed
   - id: create-frontend-account-page
     content: Criar página Account com formulário de edição de nome
-    status: pending
+    status: completed
   - id: create-frontend-preferences-page
     content: Criar página Preferences com formulário de preferências
-    status: pending
+    status: completed
   - id: create-frontend-notifications-page
     content: Criar página Notifications com toggles para tipos de email
-    status: pending
+    status: completed
   - id: create-frontend-security-page
     content: Criar página Security com sessões, login history, 2FA e API keys
     status: pending

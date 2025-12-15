@@ -529,6 +529,13 @@ def callback():
         
         db.session.commit()
         
+        # Registrar login bem-sucedido
+        try:
+            from app.utils.login_logger import log_successful_login
+            log_successful_login(google_email, organization_id_uuid, 'oauth_google')
+        except Exception as e:
+            logger.error(f"Erro ao registrar login: {str(e)}")
+        
         # Se for GET (redirecionamento do Google), redirecionar para frontend ou mostrar página de sucesso
         if request.method == 'GET':
             # Se há frontend_redirect_uri, redirecionar para lá com os dados
