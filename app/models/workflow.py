@@ -189,10 +189,11 @@ class WorkflowNode(db.Model):
     Node de um workflow. Representa um passo na execução do workflow.
     
     Tipos de nodes:
-    - trigger: Fonte de dados (sempre o primeiro, position = 1)
+    - hubspot, webhook, google-forms: Fonte de dados (sempre o primeiro, position = 1)
     - google-docs: Geração de documento no Google Docs
-    - clicksign: Envio para assinatura
-    - webhook: Chamada de webhook
+    - review-documents: Aprovação humana
+    - request-signatures: Envio para assinatura
+    - webhook: Chamada de webhook externo
     """
     __tablename__ = 'workflow_nodes'
     
@@ -254,8 +255,8 @@ class WorkflowNode(db.Model):
         return result
     
     def is_trigger(self):
-        """Verifica se é o node trigger"""
-        return self.node_type == 'trigger'
+        """Verifica se é um node trigger (sempre position 1)"""
+        return self.node_type in ['hubspot', 'webhook', 'google-forms', 'trigger']  # trigger para compatibilidade
     
     def generate_webhook_token(self):
         """Gera token único para webhook trigger"""
@@ -272,11 +273,12 @@ class WorkflowNode(db.Model):
         if not self.config:
             return False
         
-        if self.node_type == 'trigger':
-            trigger_type = self.config.get('trigger_type', 'hubspot')
-            if trigger_type == 'webhook':
+        if self.node_type in ['hubspot', 'webhook', 'google-forms', 'trigger']:
+            if self.node_type == 'webhook' or (self.node_type == 'trigger' and self.config.get('trigger_type') == 'webhook'):
                 return bool(self.webhook_token and self.config.get('field_mapping'))
-            else:
+            elif self.node_type == 'google-forms' or (self.node_type == 'trigger' and self.config.get('source_type') == 'google-forms'):
+                return bool(self.config.get('form_id'))
+            else:  # hubspot ou trigger com trigger_type='hubspot'
                 return bool(self.config.get('source_connection_id') and self.config.get('source_object_type'))
         elif self.node_type == 'google-docs':
             return bool(self.config.get('template_id'))
@@ -290,12 +292,16 @@ class WorkflowNode(db.Model):
             return bool(self.config.get('connection_id') and self.config.get('to') and self.config.get('subject_template'))
         elif self.node_type == 'outlook':
             return bool(self.config.get('connection_id') and self.config.get('to') and self.config.get('subject_template'))
+        elif self.node_type == 'review-documents':
+            return bool(self.config.get('approver_emails'))
+        elif self.node_type == 'request-signatures':
+            return bool(self.config.get('connection_id') and self.config.get('recipients'))
+        # Compatibilidade com nomes antigos
         elif self.node_type == 'human-in-loop':
             return bool(self.config.get('approver_emails'))
         elif self.node_type == 'clicksign':
             return bool(self.config.get('connection_id') and self.config.get('recipients'))
-        elif self.node_type == 'webhook':
-            return bool(self.config.get('url'))
+        # NOTA: webhook node externo será tratado depois - por enquanto apenas trigger webhook
         
         return False
 

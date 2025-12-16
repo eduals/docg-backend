@@ -30,6 +30,97 @@ def list_templates():
     })
 
 
+@templates_bp.route('/drive', methods=['GET'])
+@require_auth
+@require_org
+def list_templates_from_drive():
+    """
+    Lista templates diretamente do Google Drive sem criar registro no banco.
+    Útil para selecionar templates antes de registrá-los.
+    
+    Query params:
+    - type: document ou presentation (obrigatório)
+    - folder_id: ID da pasta do Google Drive (opcional)
+    """
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+    
+    file_type = request.args.get('type')
+    folder_id = request.args.get('folder_id')
+    
+    if not file_type:
+        return jsonify({'error': 'type é obrigatório (document ou presentation)'}), 400
+    
+    if file_type not in ['document', 'presentation']:
+        return jsonify({'error': 'type deve ser document ou presentation'}), 400
+    
+    try:
+        organization_id = g.organization_id
+        google_creds = get_google_credentials(organization_id)
+        
+        if not google_creds:
+            return jsonify({
+                'error': 'Google account not connected or token expired'
+            }), 401
+        
+        service = build('drive', 'v3', credentials=google_creds)
+        
+        # Determinar MIME type baseado no file_type
+        mime_types = {
+            'document': 'application/vnd.google-apps.document',
+            'presentation': 'application/vnd.google-apps.presentation'
+        }
+        mime_type = mime_types[file_type]
+        
+        # Construir query
+        query = f"trashed=false and mimeType='{mime_type}'"
+        if folder_id:
+            query += f" and '{folder_id}' in parents"
+        
+        # Buscar arquivos
+        results = service.files().list(
+            q=query,
+            fields="files(id, name, mimeType, modifiedTime, createdTime, size, webViewLink)",
+            pageSize=100,
+            orderBy="modifiedTime desc"
+        ).execute()
+        
+        files = results.get('files', [])
+        
+        # Formatar resposta
+        templates = []
+        for file in files:
+            templates.append({
+                'id': file.get('id'),
+                'name': file.get('name'),
+                'google_file_id': file.get('id'),
+                'google_file_type': file_type,
+                'google_file_url': file.get('webViewLink'),
+                'modified_time': file.get('modifiedTime'),
+                'created_time': file.get('createdTime'),
+                'size': file.get('size'),
+                'is_from_drive': True  # Flag para indicar que vem do Drive
+            })
+        
+        return jsonify({
+            'templates': templates,
+            'total': len(templates)
+        })
+        
+    except HttpError as e:
+        logger.error(f"Erro ao buscar templates do Google Drive: {str(e)}")
+        return jsonify({
+            'error': 'Google Drive API error',
+            'message': str(e)
+        }), 500
+    except Exception as e:
+        logger.error(f"Erro ao listar templates do Drive: {str(e)}")
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
+
+
 @templates_bp.route('/<template_id>', methods=['GET'])
 @require_auth
 @require_org

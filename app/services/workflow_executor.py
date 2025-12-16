@@ -79,7 +79,20 @@ class TriggerNodeExecutor(NodeExecutor):
     def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
         """Extrai dados baseado na configuração do trigger"""
         config = node.config or {}
-        trigger_type = config.get('trigger_type', 'hubspot')
+        
+        # Determinar tipo de trigger baseado no node_type
+        if node.node_type == 'webhook':
+            trigger_type = 'webhook'
+        elif node.node_type == 'google-forms':
+            trigger_type = 'google-forms'
+        elif node.node_type == 'hubspot':
+            trigger_type = 'hubspot'
+        elif node.node_type == 'trigger':
+            # Compatibilidade: usar config.trigger_type
+            trigger_type = config.get('trigger_type', 'hubspot')
+        else:
+            # Fallback
+            trigger_type = 'hubspot'
         
         if trigger_type == 'webhook':
             # Para webhook trigger, os dados já vêm no context.source_data
@@ -90,41 +103,46 @@ class TriggerNodeExecutor(NodeExecutor):
             logger.info(f"Webhook trigger node executado: dados recebidos do webhook")
             return context
         
-        # Trigger HubSpot (comportamento original)
-        source_connection_id = config.get('source_connection_id')
-        source_object_type = config.get('source_object_type') or context.source_object_type
+        elif trigger_type == 'google-forms':
+            # TODO: Implementar lógica para Google Forms
+            raise NotImplementedError('Google Forms trigger ainda não implementado')
         
-        if not source_connection_id:
-            raise ValueError('source_connection_id não configurado no trigger node')
-        
-        # Buscar conexão
-        from app.models import DataSourceConnection
-        connection = DataSourceConnection.query.get(source_connection_id)
-        if not connection:
-            raise ValueError(f'Conexão não encontrada: {source_connection_id}')
-        
-        if connection.source_type != 'hubspot':
-            raise ValueError(f'Tipo de conexão não suportado: {connection.source_type}')
-        
-        # Extrair dados do HubSpot
-        data_source = HubSpotDataSource(connection)
-        source_data = data_source.get_object_data(
-            source_object_type,
-            context.source_object_id
-        )
-        
-        # Normalizar dados (mover properties para nível raiz)
-        if isinstance(source_data, dict) and 'properties' in source_data:
-            properties = source_data.pop('properties', {})
-            if isinstance(properties, dict):
-                source_data.update(properties)
-        
-        context.source_data = source_data
-        context.metadata['current_node_position'] = node.position
-        
-        logger.info(f"Trigger node executado: extraídos dados de {source_object_type} {context.source_object_id}")
-        
-        return context
+        else:
+            # Trigger HubSpot (comportamento original)
+            source_connection_id = config.get('source_connection_id')
+            source_object_type = config.get('source_object_type') or context.source_object_type
+            
+            if not source_connection_id:
+                raise ValueError('source_connection_id não configurado no trigger node')
+            
+            # Buscar conexão
+            from app.models import DataSourceConnection
+            connection = DataSourceConnection.query.get(source_connection_id)
+            if not connection:
+                raise ValueError(f'Conexão não encontrada: {source_connection_id}')
+            
+            if connection.source_type != 'hubspot':
+                raise ValueError(f'Tipo de conexão não suportado: {connection.source_type}')
+            
+            # Extrair dados do HubSpot
+            data_source = HubSpotDataSource(connection)
+            source_data = data_source.get_object_data(
+                source_object_type,
+                context.source_object_id
+            )
+            
+            # Normalizar dados (mover properties para nível raiz)
+            if isinstance(source_data, dict) and 'properties' in source_data:
+                properties = source_data.pop('properties', {})
+                if isinstance(properties, dict):
+                    source_data.update(properties)
+            
+            context.source_data = source_data
+            context.metadata['current_node_position'] = node.position
+            
+            logger.info(f"HubSpot trigger node executado: extraídos dados de {source_object_type} {context.source_object_id}")
+            
+            return context
 
 
 class GoogleDocsNodeExecutor(NodeExecutor):
@@ -1394,17 +1412,28 @@ class WorkflowExecutor:
     
     def __init__(self):
         self.executors = {
-            'trigger': TriggerNodeExecutor(),
+            # Triggers padronizados
+            'hubspot': TriggerNodeExecutor(),        # NOVO: nome padronizado
+            'webhook': TriggerNodeExecutor(),        # Trigger webhook
+            'google-forms': TriggerNodeExecutor(),    # NOVO: nome padronizado
+            # Documentos
             'google-docs': GoogleDocsNodeExecutor(),
             'google-slides': GoogleSlidesNodeExecutor(),
             'microsoft-word': MicrosoftWordNodeExecutor(),
             'microsoft-powerpoint': MicrosoftPowerPointNodeExecutor(),
+            # Email
             'gmail': GmailEmailNodeExecutor(),
             'outlook': OutlookEmailNodeExecutor(),
-            'human-in-loop': HumanInLoopNodeExecutor(),
-            'signature': SignatureNodeExecutor(),  # NOVO: genérico
-            'clicksign': ClicksignNodeExecutor(),  # COMPATIBILIDADE: mapear para signature
-            'webhook': WebhookNodeExecutor()
+            # Human in the Loop
+            'review-documents': HumanInLoopNodeExecutor(),  # NOVO: nome padronizado
+            'request-signatures': SignatureNodeExecutor(),   # NOVO: nome padronizado
+            # Utilities
+            # NOTA: 'webhook' como node externo será tratado depois - por enquanto apenas trigger webhook
+            # Compatibilidade com nomes antigos (DEPRECATED)
+            'trigger': TriggerNodeExecutor(),           # DEPRECATED
+            'human-in-loop': HumanInLoopNodeExecutor(), # DEPRECATED
+            'signature': SignatureNodeExecutor(),      # DEPRECATED
+            'clicksign': ClicksignNodeExecutor(),       # DEPRECATED
         }
     
     def execute_workflow(
@@ -1472,7 +1501,7 @@ class WorkflowExecutor:
                     context.add_error(str(node.id), node.node_type, str(e))
                     logger.error(f"Erro ao executar node {node.id} ({node.node_type}): {str(e)}")
                     # Para erros críticos, interromper execução
-                    if node.node_type in ['trigger', 'google-docs']:
+                    if node.node_type in ['hubspot', 'webhook', 'google-forms', 'trigger', 'google-docs']:
                         raise
             
             # Atualizar execução com resultado

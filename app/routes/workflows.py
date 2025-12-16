@@ -184,9 +184,14 @@ def create_workflow():
     db.session.flush()  # Para obter o ID
     
     # Criar trigger node automaticamente
-    trigger_type = data.get('trigger_type', 'manual')
+    # Determinar tipo de trigger baseado no que foi enviado
+    trigger_node_type = 'hubspot'  # Default
+    if data.get('trigger_type') == 'webhook':
+        trigger_node_type = 'webhook'
+    elif data.get('source_type') == 'google-forms':
+        trigger_node_type = 'google-forms'
+    
     trigger_config = {
-        'trigger_type': trigger_type,
         'source_connection_id': str(data.get('source_connection_id')) if data.get('source_connection_id') else None,
         'source_object_type': data.get('source_object_type'),
         'trigger_config': data.get('trigger_config', {}),
@@ -195,7 +200,7 @@ def create_workflow():
     
     trigger_node = WorkflowNode(
         workflow_id=workflow.id,
-        node_type='trigger',
+        node_type=trigger_node_type,  # Usar tipo específico, não 'trigger'
         position=1,
         parent_node_id=None,
         config=trigger_config,
@@ -203,7 +208,7 @@ def create_workflow():
     )
     
     # Se for webhook trigger, gerar token
-    if trigger_type == 'webhook':
+    if trigger_node_type == 'webhook':
         trigger_node.generate_webhook_token()
     
     db.session.add(trigger_node)
@@ -329,17 +334,17 @@ def activate_workflow(workflow_id):
         workflow_id=workflow.id
     ).order_by(WorkflowNode.position).all()
     
-    # Validar que existe trigger node
+    # Validar que existe trigger node (qualquer tipo de trigger)
     trigger_node = next((n for n in nodes if n.is_trigger()), None)
     if not trigger_node:
-        return jsonify({'error': 'Workflow deve ter um trigger node'}), 400
+        return jsonify({'error': 'Workflow deve ter um trigger node (hubspot, webhook ou google-forms)'}), 400
     
     # Validar que trigger está configurado
     if not trigger_node.is_configured():
         return jsonify({'error': 'Trigger node não está configurado'}), 400
     
     # Validar que todos os nodes obrigatórios estão configurados
-    unconfigured_nodes = [n for n in nodes if not n.is_configured() and n.node_type != 'trigger']
+    unconfigured_nodes = [n for n in nodes if not n.is_configured() and not n.is_trigger()]
     if unconfigured_nodes:
         return jsonify({
             'error': f'{len(unconfigured_nodes)} node(s) não estão configurados',
@@ -726,17 +731,38 @@ def create_workflow_node(workflow_id):
         return jsonify({'error': 'node_type é obrigatório'}), 400
     
     node_type = data['node_type']
-    valid_types = ['trigger', 'google-docs', 'google-slides', 'microsoft-word', 'microsoft-powerpoint', 'gmail', 'outlook', 'clicksign', 'webhook', 'human-in-loop']
+    valid_types = [
+        # Triggers (sempre position 1)
+        'hubspot',           # NOVO: trigger HubSpot
+        'webhook',           # Trigger webhook
+        'google-forms',      # NOVO: trigger Google Forms
+        # Documentos
+        'google-docs',
+        'google-slides',
+        'microsoft-word',
+        'microsoft-powerpoint',
+        # Email
+        'gmail',
+        'outlook',
+        # Human in the Loop
+        'review-documents',  # NOVO: substitui human-in-loop
+        'request-signatures', # NOVO: substitui signature/clicksign
+        # Compatibilidade (DEPRECATED - não usar em novos workflows)
+        'trigger',           # DEPRECATED: usar hubspot, webhook ou google-forms
+        'human-in-loop',     # DEPRECATED: usar review-documents
+        'clicksign',         # DEPRECATED: usar request-signatures
+        'signature',         # DEPRECATED: usar request-signatures
+    ]
     if node_type not in valid_types:
         return jsonify({
             'error': f'node_type deve ser um de: {", ".join(valid_types)}'
         }), 400
     
-    # Se for trigger, verificar se já existe
-    if node_type == 'trigger':
-        existing_trigger = WorkflowNode.query.filter_by(
-            workflow_id=workflow.id,
-            node_type='trigger'
+    # Se for qualquer tipo de trigger, verificar se já existe
+    if node_type in ['hubspot', 'webhook', 'google-forms']:
+        existing_trigger = WorkflowNode.query.filter(
+            WorkflowNode.workflow_id == workflow.id,
+            WorkflowNode.node_type.in_(['hubspot', 'webhook', 'google-forms', 'trigger'])  # Incluir trigger para compatibilidade
         ).first()
         if existing_trigger:
             return jsonify({
@@ -753,9 +779,9 @@ def create_workflow_node(workflow_id):
         position = (last_node.position + 1) if last_node else 1
     
     # Se position for 1 e não for trigger, retornar erro
-    if position == 1 and node_type != 'trigger':
+    if position == 1 and node_type not in ['hubspot', 'webhook', 'google-forms']:
         return jsonify({
-            'error': 'O primeiro node (position=1) deve ser do tipo trigger'
+            'error': 'O primeiro node (position=1) deve ser um trigger (hubspot, webhook ou google-forms)'
         }), 400
     
     # Validar parent_node_id se fornecido
@@ -806,10 +832,10 @@ def update_workflow_node(workflow_id, node_id):
     
     data = request.get_json()
     
-    # Não permitir alterar node_type do trigger
-    if node.is_trigger() and 'node_type' in data and data['node_type'] != 'trigger':
+    # Não permitir alterar node_type de um trigger para não-trigger
+    if node.is_trigger() and 'node_type' in data and data['node_type'] not in ['hubspot', 'webhook', 'google-forms', 'trigger']:
         return jsonify({
-            'error': 'Não é possível alterar o tipo do trigger node'
+            'error': 'Não é possível alterar o tipo do trigger node para um tipo não-trigger'
         }), 400
     
     # Atualizar campos permitidos
@@ -817,7 +843,7 @@ def update_workflow_node(workflow_id, node_id):
         # Validar que não está tentando colocar outro node na position 1
         if data['position'] == 1 and not node.is_trigger():
             return jsonify({
-                'error': 'Apenas o trigger node pode ter position=1'
+                'error': 'Apenas trigger nodes (hubspot, webhook, google-forms) podem ter position=1'
             }), 400
         node.position = data['position']
     
@@ -936,7 +962,7 @@ def reorder_workflow_nodes(workflow_id):
         node_1 = next((n for n in nodes if str(n.id) == position_1_node['node_id']), None)
         if not node_1 or not node_1.is_trigger():
             return jsonify({
-                'error': 'O node na position 1 deve ser do tipo trigger'
+                'error': 'O node na position 1 deve ser um trigger (hubspot, webhook ou google-forms)'
             }), 400
     
     # Atualizar positions em duas etapas para evitar conflito de constraint única
@@ -988,8 +1014,8 @@ def get_workflow_node_config(workflow_id, node_id):
         'status': node.status
     }
     
-    # Adicionar webhook_token se for trigger node
-    if node.node_type == 'trigger' and node.webhook_token:
+    # Adicionar webhook_token se for webhook trigger node
+    if (node.node_type == 'webhook' or (node.node_type == 'trigger' and node.config.get('trigger_type') == 'webhook')) and node.webhook_token:
         response_data['webhook_token'] = node.webhook_token
     
     return jsonify(response_data)
@@ -1226,4 +1252,178 @@ def preview_workflow_data(workflow_id):
         return jsonify({
             'error': str(e)
         }), 500
+
+
+# ==================== WORKFLOW EXECUTIONS (RUNS) ENDPOINTS ====================
+
+@workflows_bp.route('/<workflow_id>/runs', methods=['GET'])
+@flexible_hubspot_auth
+@require_auth
+@require_org
+def list_workflow_runs(workflow_id):
+    """
+    Lista execuções (runs) de um workflow.
+    
+    Query params:
+    - limit: Número máximo de execuções (default: 50, max: 100)
+    - status: Filtrar por status (running, completed, failed)
+    - offset: Paginação (default: 0)
+    """
+    workflow = Workflow.query.filter_by(
+        id=workflow_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    # Parâmetros de paginação
+    limit = min(int(request.args.get('limit', 50)), 100)
+    offset = int(request.args.get('offset', 0))
+    status_filter = request.args.get('status')
+    
+    # Buscar execuções
+    query = WorkflowExecution.query.filter_by(workflow_id=workflow.id)
+    
+    if status_filter:
+        # Mapear status da interface para status do backend
+        status_mapping = {
+            'running': 'running',
+            'success': 'completed',
+            'error': 'failed',
+            'pending': 'running'  # Pending pode ser considerado running
+        }
+        backend_status = status_mapping.get(status_filter.lower())
+        if backend_status:
+            query = query.filter_by(status=backend_status)
+    
+    # Contar total antes de aplicar paginação
+    total_count = query.count()
+    
+    # Aplicar paginação e ordenação
+    executions = query.order_by(WorkflowExecution.started_at.desc()).offset(offset).limit(limit).all()
+    
+    # Buscar nodes do workflow para calcular steps
+    nodes = WorkflowNode.query.filter_by(
+        workflow_id=workflow.id
+    ).order_by(WorkflowNode.position).all()
+    total_steps = len([n for n in nodes if not n.is_trigger()])  # Excluir trigger node
+    
+    # Converter para formato esperado pela interface
+    runs = []
+    for execution in executions:
+        # Mapear status do backend para interface
+        status_mapping = {
+            'completed': 'success',
+            'failed': 'error',
+            'running': 'running'
+        }
+        interface_status = status_mapping.get(execution.status, 'pending')
+        
+        # Calcular steps_completed baseado no status
+        # Se completed, todos os steps foram completados
+        # Se failed, podemos usar metadata se disponível
+        steps_completed = None
+        if execution.status == 'completed':
+            steps_completed = total_steps
+        elif execution.status == 'failed':
+            # Tentar extrair de trigger_data ou usar 0
+            steps_completed = 0
+        elif execution.status == 'running':
+            # Para running, podemos usar metadata se disponível
+            steps_completed = None
+        
+        # Mapear trigger_type para trigger_source
+        trigger_source = execution.trigger_type or 'manual'
+        if trigger_source == 'manual':
+            trigger_source = 'manual'
+        elif trigger_source == 'webhook':
+            trigger_source = 'webhook'
+        elif trigger_source == 'scheduled':
+            trigger_source = 'scheduled'
+        
+        run_dict = {
+            'id': str(execution.id),
+            'status': interface_status,
+            'started_at': execution.started_at.isoformat() if execution.started_at else None,
+            'completed_at': execution.completed_at.isoformat() if execution.completed_at else None,
+            'duration_ms': execution.execution_time_ms,
+            'trigger_source': trigger_source,
+            'trigger_data': execution.trigger_data,
+            'error_message': execution.error_message,
+            'steps_completed': steps_completed,
+            'steps_total': total_steps if total_steps > 0 else None
+        }
+        
+        runs.append(run_dict)
+    
+    return jsonify({
+        'runs': runs,
+        'pagination': {
+            'total': total_count,
+            'limit': limit,
+            'offset': offset,
+            'has_more': (offset + limit) < total_count
+        }
+    })
+
+
+@workflows_bp.route('/<workflow_id>/runs/<run_id>', methods=['GET'])
+@flexible_hubspot_auth
+@require_auth
+@require_org
+def get_workflow_run(workflow_id, run_id):
+    """
+    Retorna detalhes de uma execução específica.
+    """
+    workflow = Workflow.query.filter_by(
+        id=workflow_id,
+        organization_id=g.organization_id
+    ).first_or_404()
+    
+    execution = WorkflowExecution.query.filter_by(
+        id=run_id,
+        workflow_id=workflow.id
+    ).first_or_404()
+    
+    # Buscar nodes do workflow para calcular steps
+    nodes = WorkflowNode.query.filter_by(
+        workflow_id=workflow.id
+    ).order_by(WorkflowNode.position).all()
+    total_steps = len([n for n in nodes if not n.is_trigger()])
+    
+    # Mapear status
+    status_mapping = {
+        'completed': 'success',
+        'failed': 'error',
+        'running': 'running'
+    }
+    interface_status = status_mapping.get(execution.status, 'pending')
+    
+    # Calcular steps_completed
+    steps_completed = None
+    if execution.status == 'completed':
+        steps_completed = total_steps
+    elif execution.status == 'failed':
+        steps_completed = 0
+    elif execution.status == 'running':
+        steps_completed = None
+    
+    # Mapear trigger_source
+    trigger_source = execution.trigger_type or 'manual'
+    
+    run_dict = {
+        'id': str(execution.id),
+        'workflow_id': str(execution.workflow_id),
+        'status': interface_status,
+        'started_at': execution.started_at.isoformat() if execution.started_at else None,
+        'completed_at': execution.completed_at.isoformat() if execution.completed_at else None,
+        'duration_ms': execution.execution_time_ms,
+        'trigger_source': trigger_source,
+        'trigger_data': execution.trigger_data,
+        'error_message': execution.error_message,
+        'steps_completed': steps_completed,
+        'steps_total': total_steps if total_steps > 0 else None,
+        'generated_document_id': str(execution.generated_document_id) if execution.generated_document_id else None,
+        'ai_metrics': execution.ai_metrics
+    }
+    
+    return jsonify(run_dict)
 

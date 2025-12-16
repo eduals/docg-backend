@@ -68,11 +68,11 @@ def receive_webhook(workflow_id, webhook_token):
         webhook_token: Token único do webhook trigger node
     """
     try:
-        # Buscar trigger node pelo token
-        trigger_node = WorkflowNode.query.filter_by(
-            webhook_token=webhook_token,
-            node_type='trigger',
-            workflow_id=workflow_id
+        # Buscar trigger node pelo token (webhook trigger)
+        trigger_node = WorkflowNode.query.filter(
+            WorkflowNode.webhook_token == webhook_token,
+            WorkflowNode.workflow_id == workflow_id,
+            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade)
         ).first()
         
         if not trigger_node:
@@ -152,9 +152,9 @@ def test_webhook(workflow_id):
         ).first_or_404()
         
         # Buscar trigger node webhook
-        trigger_node = WorkflowNode.query.filter_by(
-            workflow_id=workflow.id,
-            node_type='trigger'
+        trigger_node = WorkflowNode.query.filter(
+            WorkflowNode.workflow_id == workflow.id,
+            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade)
         ).first()
         
         if not trigger_node:
@@ -163,6 +163,7 @@ def test_webhook(workflow_id):
         config = trigger_node.config or {}
         # Verificar se é webhook trigger de múltiplas formas
         is_webhook_trigger = (
+            trigger_node.node_type == 'webhook' or
             config.get('trigger_type') == 'webhook' or
             config.get('source_object_type') == 'webhook' or
             trigger_node.webhook_token is not None
@@ -275,9 +276,9 @@ def regenerate_webhook_token(workflow_id):
         ).first_or_404()
         
         # Buscar trigger node webhook
-        trigger_node = WorkflowNode.query.filter_by(
-            workflow_id=workflow.id,
-            node_type='trigger'
+        trigger_node = WorkflowNode.query.filter(
+            WorkflowNode.workflow_id == workflow.id,
+            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade)
         ).first()
         
         if not trigger_node:
@@ -286,6 +287,7 @@ def regenerate_webhook_token(workflow_id):
         config = trigger_node.config or {}
         # Verificar se é webhook trigger de múltiplas formas
         is_webhook_trigger = (
+            trigger_node.node_type == 'webhook' or
             config.get('trigger_type') == 'webhook' or
             config.get('source_object_type') == 'webhook' or
             trigger_node.webhook_token is not None
