@@ -3,6 +3,9 @@ from datetime import datetime
 from app.database import db
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
+# Node type constants
+TRIGGER_NODE_TYPES = ['hubspot', 'webhook', 'google-forms', 'trigger']  # 'trigger' para compatibilidade
+
 class Workflow(db.Model):
     __tablename__ = 'workflows'
     
@@ -256,7 +259,11 @@ class WorkflowNode(db.Model):
     
     def is_trigger(self):
         """Verifica se é um node trigger (sempre position 1)"""
-        return self.node_type in ['hubspot', 'webhook', 'google-forms', 'trigger']  # trigger para compatibilidade
+        return self.node_type in TRIGGER_NODE_TYPES
+    
+    def is_step(self):
+        """Verifica se é um node step (position > 1)"""
+        return not self.is_trigger()
     
     def generate_webhook_token(self):
         """Gera token único para webhook trigger"""
@@ -273,7 +280,7 @@ class WorkflowNode(db.Model):
         if not self.config:
             return False
         
-        if self.node_type in ['hubspot', 'webhook', 'google-forms', 'trigger']:
+        if self.node_type in TRIGGER_NODE_TYPES:
             if self.node_type == 'webhook' or (self.node_type == 'trigger' and self.config.get('trigger_type') == 'webhook'):
                 return bool(self.webhook_token and self.config.get('field_mapping'))
             elif self.node_type == 'google-forms' or (self.node_type == 'trigger' and self.config.get('source_type') == 'google-forms'):

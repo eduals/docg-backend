@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
 from app.database import db
 from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection, WorkflowNode, WorkflowExecution, Organization
+from app.models.workflow import TRIGGER_NODE_TYPES
 from app.utils.auth import require_auth, require_org, require_admin
 from app.utils.hubspot_auth import flexible_hubspot_auth
 from sqlalchemy.exc import IntegrityError
@@ -763,10 +764,10 @@ def create_workflow_node(workflow_id):
             }), 400
         
         # Se for qualquer tipo de trigger, verificar se já existe
-        if node_type in ['hubspot', 'webhook', 'google-forms']:
+        if node_type in TRIGGER_NODE_TYPES:
             existing_trigger = WorkflowNode.query.filter(
                 WorkflowNode.workflow_id == workflow.id,
-                WorkflowNode.node_type.in_(['hubspot', 'webhook', 'google-forms', 'trigger'])  # Incluir trigger para compatibilidade
+                WorkflowNode.node_type.in_(TRIGGER_NODE_TYPES)  # Usar constante centralizada
             ).first()
             if existing_trigger:
                 return jsonify({
@@ -869,7 +870,7 @@ def update_workflow_node(workflow_id, node_id):
     data = request.get_json()
     
     # Não permitir alterar node_type de um trigger para não-trigger
-    if node.is_trigger() and 'node_type' in data and data['node_type'] not in ['hubspot', 'webhook', 'google-forms', 'trigger']:
+    if node.is_trigger() and 'node_type' in data and data['node_type'] not in TRIGGER_NODE_TYPES:
         return jsonify({
             'error': 'Não é possível alterar o tipo do trigger node para um tipo não-trigger'
         }), 400

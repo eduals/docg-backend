@@ -72,7 +72,7 @@ def receive_webhook(workflow_id, webhook_token):
         trigger_node = WorkflowNode.query.filter(
             WorkflowNode.webhook_token == webhook_token,
             WorkflowNode.workflow_id == workflow_id,
-            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade)
+            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade) - usar TRIGGER_NODE_TYPES se necessário
         ).first()
         
         if not trigger_node:
@@ -154,7 +154,7 @@ def test_webhook(workflow_id):
         # Buscar trigger node webhook
         trigger_node = WorkflowNode.query.filter(
             WorkflowNode.workflow_id == workflow.id,
-            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade)
+            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade) - usar TRIGGER_NODE_TYPES se necessário
         ).first()
         
         if not trigger_node:
@@ -278,7 +278,7 @@ def regenerate_webhook_token(workflow_id):
         # Buscar trigger node webhook
         trigger_node = WorkflowNode.query.filter(
             WorkflowNode.workflow_id == workflow.id,
-            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade)
+            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade) - usar TRIGGER_NODE_TYPES se necessário
         ).first()
         
         if not trigger_node:
