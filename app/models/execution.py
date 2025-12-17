@@ -14,12 +14,24 @@ class WorkflowExecution(db.Model):
     trigger_data = db.Column(JSONB)
     
     status = db.Column(db.String(50), default='running')
-    # running, completed, failed
+    # running, paused, completed, failed
     error_message = db.Column(db.Text)
     
     started_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime)
     execution_time_ms = db.Column(db.Integer)
+    
+    # === Temporal Workflow Tracking ===
+    # ID do workflow no Temporal Server
+    temporal_workflow_id = db.Column(db.String(255), unique=True, nullable=True)
+    # Run ID do Temporal (para debug/histórico)
+    temporal_run_id = db.Column(db.String(255), nullable=True)
+    # Node atual sendo executado
+    current_node_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflow_nodes.id', ondelete='SET NULL'), nullable=True)
+    # Snapshot do ExecutionContext para retomada
+    execution_context = db.Column(JSONB, nullable=True)
+    # Logs por node: [{node_id, node_type, started_at, completed_at, duration_ms, status, output, error}]
+    execution_logs = db.Column(JSONB, default=list)
     
     # Métricas de geração de IA
     # Estrutura:
@@ -47,9 +59,10 @@ class WorkflowExecution(db.Model):
     
     # Relationships
     generated_document = db.relationship('GeneratedDocument', foreign_keys=[generated_document_id])
+    current_node = db.relationship('WorkflowNode', foreign_keys=[current_node_id])
     
-    def to_dict(self):
-        return {
+    def to_dict(self, include_logs=False):
+        result = {
             'id': str(self.id),
             'workflow_id': str(self.workflow_id),
             'generated_document_id': str(self.generated_document_id) if self.generated_document_id else None,
@@ -60,7 +73,39 @@ class WorkflowExecution(db.Model):
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'execution_time_ms': self.execution_time_ms,
+            'temporal_workflow_id': self.temporal_workflow_id,
+            'temporal_run_id': self.temporal_run_id,
+            'current_node_id': str(self.current_node_id) if self.current_node_id else None,
             'ai_metrics': self.ai_metrics,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
+        
+        if include_logs:
+            result['execution_logs'] = self.execution_logs or []
+        
+        return result
+    
+    def add_log(self, node_id: str, node_type: str, status: str, 
+                started_at: datetime = None, completed_at: datetime = None,
+                output: dict = None, error: str = None):
+        """Adiciona log de execução de um node"""
+        if self.execution_logs is None:
+            self.execution_logs = []
+        
+        duration_ms = None
+        if started_at and completed_at:
+            duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+        
+        log_entry = {
+            'node_id': node_id,
+            'node_type': node_type,
+            'status': status,
+            'started_at': started_at.isoformat() if started_at else None,
+            'completed_at': completed_at.isoformat() if completed_at else None,
+            'duration_ms': duration_ms,
+            'output': output,
+            'error': error
+        }
+        
+        self.execution_logs = self.execution_logs + [log_entry]
 

@@ -1,0 +1,30 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar e instalar certificado SSL
+COPY certificates/ca-certificate.crt /usr/local/share/ca-certificates/ca-certificate.crt
+RUN update-ca-certificates
+
+# Copiar requirements e instalar dependências Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar código da aplicação
+COPY . .
+
+# Variáveis de ambiente para Temporal
+ENV TEMPORAL_ADDRESS=temporal-server:7233
+ENV TEMPORAL_NAMESPACE=default
+ENV TEMPORAL_TASK_QUEUE=docg-workflows
+
+# Comando para rodar o worker
+CMD ["python", "-m", "app.temporal.worker"]
+

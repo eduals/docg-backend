@@ -619,10 +619,31 @@ def handle_signature_webhook(provider):
         elif event['status'] == SignatureStatus.CANCELED:
             signature_request.completed_at = event['timestamp']
         
+        # Atualizar signers_status se tiver info do signatário
+        signer_email = event.get('signer_email')
+        if signer_email:
+            signature_request.update_signer_status(signer_email, event['status'].value)
+        
         signature_request.webhook_data = payload
         db.session.commit()
         
         logger.info(f"Webhook processado: {provider} - {event['event_type']} - {envelope_id}")
+        
+        # === TEMPORAL: Enviar signal se todos assinaram ===
+        if signature_request.all_signed() and signature_request.workflow_execution_id:
+            try:
+                from app.temporal.service import send_signature_update, is_temporal_enabled
+                
+                if is_temporal_enabled():
+                    send_signature_update(
+                        workflow_execution_id=str(signature_request.workflow_execution_id),
+                        signature_request_id=str(signature_request.id),
+                        status='signed'
+                    )
+                    logger.info(f"Signal de assinatura enviado para execução {signature_request.workflow_execution_id}")
+            except Exception as e:
+                logger.error(f"Erro ao enviar signal Temporal: {e}")
+                # Não falhar o webhook por causa do Temporal
         
         return jsonify({'success': True, 'event': event})
         

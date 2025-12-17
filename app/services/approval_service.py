@@ -30,11 +30,12 @@ def resume_workflow_execution(approval: WorkflowApproval):
     
     context = ExecutionContext(
         workflow_id=str(workflow.id),
+        execution_id=str(execution.id),
         source_object_id=execution_context_data.get('source_object_id'),
-        source_object_type=execution_context_data.get('source_object_type'),
-        source_data=execution_context_data.get('source_data', {}),
-        metadata=execution_context_data.get('metadata', {})
+        source_object_type=execution_context_data.get('source_object_type')
     )
+    context.source_data = execution_context_data.get('source_data', {})
+    context.metadata = execution_context_data.get('metadata', {})
     
     # Restaurar documentos gerados
     context.generated_documents = execution_context_data.get('generated_documents', [])

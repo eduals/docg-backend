@@ -53,8 +53,26 @@ def approve_workflow(approval_token):
     
     # Retomar execução do workflow
     try:
-        from app.services.approval_service import resume_workflow_execution
-        resume_workflow_execution(approval)
+        from app.temporal.service import send_approval_decision, is_temporal_enabled
+        
+        if is_temporal_enabled():
+            # === TEMPORAL: Enviar signal ===
+            execution = WorkflowExecution.query.get(approval.workflow_execution_id)
+            if execution and execution.temporal_workflow_id:
+                send_approval_decision(
+                    workflow_execution_id=str(approval.workflow_execution_id),
+                    approval_id=str(approval.id),
+                    decision='approved'
+                )
+                logger.info(f"Signal de aprovação enviado para execução {approval.workflow_execution_id}")
+            else:
+                # Fallback: usar método síncrono
+                from app.services.approval_service import resume_workflow_execution
+                resume_workflow_execution(approval)
+        else:
+            # Temporal não habilitado: usar método síncrono
+            from app.services.approval_service import resume_workflow_execution
+            resume_workflow_execution(approval)
     except Exception as e:
         logger.exception(f'Erro ao retomar execução: {str(e)}')
         return jsonify({
@@ -95,12 +113,31 @@ def reject_workflow(approval_token):
     approval.rejection_comment = rejection_comment
     db.session.commit()
     
-    # Marcar execução como failed
+    # Marcar execução como failed ou enviar signal
     execution = WorkflowExecution.query.get(approval.workflow_execution_id)
     if execution:
-        execution.status = 'failed'
-        execution.error_message = f'Workflow rejeitado: {rejection_comment or "Sem comentário"}'
-        db.session.commit()
+        try:
+            from app.temporal.service import send_approval_decision, is_temporal_enabled
+            
+            if is_temporal_enabled() and execution.temporal_workflow_id:
+                # === TEMPORAL: Enviar signal de rejeição ===
+                send_approval_decision(
+                    workflow_execution_id=str(approval.workflow_execution_id),
+                    approval_id=str(approval.id),
+                    decision='rejected'
+                )
+                logger.info(f"Signal de rejeição enviado para execução {approval.workflow_execution_id}")
+            else:
+                # Fallback: marcar direto no banco
+                execution.status = 'failed'
+                execution.error_message = f'Workflow rejeitado: {rejection_comment or "Sem comentário"}'
+                db.session.commit()
+        except Exception as e:
+            logger.exception(f'Erro ao enviar signal de rejeição: {str(e)}')
+            # Fallback
+            execution.status = 'failed'
+            execution.error_message = f'Workflow rejeitado: {rejection_comment or "Sem comentário"}'
+            db.session.commit()
     
     return jsonify({
         'success': True,
