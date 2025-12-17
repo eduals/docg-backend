@@ -1446,6 +1446,9 @@ class WorkflowExecutor:
         """
         Executa um workflow processando nodes sequencialmente.
         
+        Se Temporal estiver habilitado, inicia execução via Temporal.
+        Caso contrário, executa de forma síncrona (fallback).
+        
         Args:
             workflow: Workflow com nodes configurados
             source_object_id: ID do objeto na fonte (HubSpot)
@@ -1468,6 +1471,30 @@ class WorkflowExecutor:
         db.session.add(execution)
         db.session.commit()
         
+        # Verificar se Temporal está habilitado
+        try:
+            from app.temporal.service import start_workflow_execution, is_temporal_enabled
+            
+            if is_temporal_enabled():
+                # Iniciar via Temporal
+                try:
+                    start_workflow_execution(
+                        execution_id=str(execution.id),
+                        workflow_id=str(workflow.id)
+                    )
+                    logger.info(f"Workflow {workflow.id} iniciado via Temporal (execution: {execution.id})")
+                    return execution
+                except Exception as e:
+                    logger.error(f"Erro ao iniciar workflow via Temporal: {e}")
+                    # Fallback para execução síncrona
+                    logger.warning("Fazendo fallback para execução síncrona devido a erro no Temporal")
+        except ImportError:
+            # Temporal não está disponível (módulo não importado)
+            logger.debug("Temporal não disponível, usando execução síncrona")
+        except Exception as e:
+            logger.warning(f"Erro ao verificar Temporal: {e}, usando execução síncrona")
+        
+        # Fallback: Execução síncrona (código existente)
         start_time = datetime.utcnow()
         
         try:

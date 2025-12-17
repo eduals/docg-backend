@@ -13,6 +13,7 @@ O DocGen Backend é uma aplicação Flask que fornece uma API RESTful para gera�
 - **Autenticação**: JWT + OAuth (Google, Microsoft, HubSpot)
 - **Pagamentos**: Stripe
 - **Criptografia**: AES-256 para credenciais sensíveis
+- **Execução Assíncrona**: Temporal.io (execução durável de workflows)
 
 ## Estrutura de Diretórios
 
@@ -52,11 +53,28 @@ docg-backend/
 │   │   ├── document_generation/
 │   │   ├── data_sources/
 │   │   └── integrations/
+│   ├── temporal/          # Integração Temporal (execução assíncrona)
+│   │   ├── __init__.py
+│   │   ├── config.py
+│   │   ├── client.py
+│   │   ├── service.py
+│   │   ├── worker.py
+│   │   ├── workflows/
+│   │   │   └── docg_workflow.py
+│   │   └── activities/
+│   │       ├── base.py
+│   │       ├── trigger.py
+│   │       ├── document.py
+│   │       ├── approval.py
+│   │       ├── signature.py
+│   │       └── email.py
 │   └── utils/               # Utilitários
 │       ├── encryption.py
 │       ├── auth.py
 │       └── ...
 ├── migrations/              # Migrações do banco de dados
+├── scripts/                # Scripts utilitários
+│   └── verify_temporal.py
 └── requirements.txt         # Dependências Python
 ```
 
@@ -206,8 +224,13 @@ Representa uma execução de um workflow.
 - `generated_document_id` (UUID): Documento gerado
 - `trigger_type` (String): Tipo de trigger
 - `trigger_data` (JSONB): Dados do trigger
-- `status` (String): running, completed, failed
+- `status` (String): running, completed, failed, paused
 - `ai_metrics` (JSONB): Métricas de geração por IA (tokens, custo, tempo)
+- `temporal_workflow_id` (String): ID do workflow no Temporal Server
+- `temporal_run_id` (String): Run ID do Temporal (para debug)
+- `current_node_id` (UUID): Node atual sendo executado
+- `execution_context` (JSONB): Snapshot do contexto de execução
+- `execution_logs` (JSONB): Logs por node executado
 
 ## Endpoints da API
 
@@ -516,14 +539,22 @@ Serviço responsável por executar workflows.
 
 **Fluxo de Execução:**
 1. Recebe trigger (webhook, manual, scheduled)
-2. Busca dados da fonte (HubSpot, etc.)
-3. Processa nós do workflow em ordem:
+2. Cria registro de `WorkflowExecution` no banco
+3. **Verifica se Temporal está habilitado:**
+   - Se sim: Inicia execução via Temporal (`start_workflow_execution()`) e retorna imediatamente
+   - Se não: Executa de forma síncrona (fallback)
+4. Processa nós do workflow em ordem:
    - Geração de documento (Google Docs, Word, etc.)
    - Aplicação de mapeamentos de campos
    - Geração de conteúdo por IA (se configurado)
    - Ações pós-geração (assinatura, anexo, etc.)
-4. Cria registro de execução
-5. Retorna documento gerado
+5. Atualiza registro de execução com resultado
+
+**Integração com Temporal:**
+- Quando Temporal está disponível, o `WorkflowExecutor` delega a execução para o Temporal
+- O Temporal Worker executa o workflow de forma assíncrona e durável
+- Permite pausar/retomar execuções (aprovações, assinaturas)
+- Suporta timeouts e expirações nativas
 
 ### EnvelopeCreationService
 
@@ -647,45 +678,51 @@ sequenceDiagram
     Backend->>Backend: Status = 'active'
 ```
 
-### Fluxo de Execução de Workflow
+### Fluxo de Execução de Workflow (com Temporal)
 
 ```mermaid
 sequenceDiagram
-    participant Trigger
-    participant Backend
+    participant Client
+    participant API as Flask API
+    participant Temporal as Temporal Server
+    participant Worker as Temporal Worker
+    participant DB as PostgreSQL
     participant HubSpot
     participant Google
-    participant AI
     participant ClickSign
 
-    Trigger->>Backend: Webhook / POST manual
-    Backend->>Backend: Cria WorkflowExecution
-    Backend->>HubSpot: Busca dados do objeto
-    HubSpot->>Backend: Retorna dados
+    Client->>API: POST /workflows/:id/execute
+    API->>DB: Create WorkflowExecution (running)
+    API->>Temporal: Start DocGWorkflow(execution_id)
+    API-->>Client: {execution_id, status: running}
     
-    Backend->>Google: Copia template
-    Google->>Backend: Retorna novo documento
+    Temporal->>Worker: Run workflow
+    Worker->>DB: Update current_node_id
+    Worker->>HubSpot: Busca dados do objeto
+    HubSpot->>Worker: Retorna dados
+    Worker->>DB: Add execution log (trigger)
     
-    Backend->>Backend: Aplica mapeamentos de campos
-    Backend->>Backend: Substitui tags no documento
+    Worker->>DB: Update current_node_id
+    Worker->>Google: Copia template
+    Google->>Worker: Retorna novo documento
+    Worker->>DB: Add execution log (document)
     
-    Backend->>AI: Gera conteúdo para tags de IA
-    AI->>Backend: Retorna conteúdo gerado
-    Backend->>Google: Atualiza documento
+    Worker->>DB: Update current_node_id
+    Worker->>DB: Create SignatureRequest
+    Worker->>DB: Update status=paused
+    Worker->>Temporal: await signal OR timer
     
-    Backend->>Google: Exporta PDF
-    Google->>Backend: Retorna PDF
+    Note over Worker,Temporal: ⏸️ Workflow pausado (durável)
     
-    Backend->>ClickSign: Cria envelope
-    ClickSign->>Backend: Retorna envelope_id
-    Backend->>ClickSign: Adiciona documento
-    Backend->>ClickSign: Adiciona signatários
-    Backend->>ClickSign: Envia para assinatura
+    ClickSign->>API: POST /webhooks/signature/clicksign
+    API->>DB: Update SignatureRequest
+    API->>Temporal: Signal signature_update
+    Temporal->>Worker: Resume workflow
     
-    Backend->>HubSpot: Anexa PDF ao objeto
-    HubSpot->>Backend: Confirma anexo
-    
-    Backend->>Backend: Atualiza WorkflowExecution (status: completed)
+    Worker->>DB: Update status=running
+    Worker->>DB: Update current_node_id
+    Worker->>DB: Add execution log (signature)
+    Worker->>DB: Update status=completed
 ```
 
 ### Fluxo de Conexão OAuth (Microsoft)
@@ -943,6 +980,14 @@ ENCRYPTION_KEY=...
 
 # API Token
 BACKEND_API_TOKEN=...
+
+# Temporal (Execução Assíncrona)
+TEMPORAL_ADDRESS=localhost:7233
+TEMPORAL_NAMESPACE=default
+TEMPORAL_TASK_QUEUE=docg-workflows
+TEMPORAL_ACTIVITY_TIMEOUT=300
+TEMPORAL_WORKFLOW_TIMEOUT=86400
+TEMPORAL_MAX_RETRIES=3
 ```
 
 ## Desenvolvimento
@@ -967,8 +1012,115 @@ flask run
 pytest tests/
 ```
 
+## Temporal - Execução Assíncrona
+
+### Visão Geral
+
+O sistema usa **Temporal.io** para execução durável e assíncrona de workflows. Isso permite:
+- Execuções longas sem timeout HTTP
+- Pausar e retomar execuções (aprovações, assinaturas)
+- Timeouts e expirações nativas
+- Visibilidade completa no Temporal UI
+- Retry automático com backoff exponencial
+
+### Componentes
+
+#### Temporal Client (`app/temporal/client.py`)
+- Gerencia conexão com Temporal Server
+- Envia signals para workflows em execução
+- Singleton pattern para reutilização
+
+#### Temporal Service (`app/temporal/service.py`)
+- Funções síncronas para uso na API Flask
+- `start_workflow_execution()`: Inicia execução via Temporal
+- `send_approval_decision()`: Envia signal de aprovação
+- `send_signature_update()`: Envia signal de assinatura
+- `is_temporal_enabled()`: Verifica se Temporal está configurado
+
+#### Temporal Worker (`app/temporal/worker.py`)
+- Worker que executa workflows e activities
+- Registra `DocGWorkflow` e todas as activities
+- Mantém contexto Flask para acesso ao banco
+
+#### DocGWorkflow (`app/temporal/workflows/docg_workflow.py`)
+- Workflow principal que orquestra execução
+- Processa nodes sequencialmente
+- Gerencia pausas para aprovação e assinatura
+- Aguarda signals ou timeouts
+
+#### Activities (`app/temporal/activities/`)
+- **Base**: `load_execution`, `update_current_node`, `pause_execution`, `resume_execution`, `complete_execution`, `fail_execution`, `add_execution_log`
+- **Trigger**: `execute_trigger_node` - Extrai dados da fonte
+- **Document**: `execute_document_node` - Gera documentos
+- **Approval**: `create_approval`, `expire_approval` - Gerencia aprovações
+- **Signature**: `create_signature_request`, `expire_signature` - Gerencia assinaturas
+- **Email**: `execute_email_node` - Envia emails
+
+### Fluxo de Execução
+
+1. **Início**: API cria `WorkflowExecution` e chama `start_workflow_execution()`
+2. **Temporal**: Inicia workflow no Temporal Server
+3. **Worker**: Pega workflow da task queue e executa
+4. **Nodes**: Para cada node:
+   - Atualiza `current_node_id`
+   - Executa activity correspondente
+   - Adiciona log em `execution_logs`
+5. **Pausa**: Se node requer aprovação/assinatura:
+   - Cria approval/signature request
+   - Marca execução como `paused`
+   - Aguarda signal ou timeout
+6. **Retomada**: Quando signal recebido:
+   - Verifica decisão/status
+   - Marca execução como `running`
+   - Continua para próximo node
+7. **Finalização**: Marca execução como `completed` ou `failed`
+
+### Visualização de Progresso
+
+O frontend pode visualizar o progresso das execuções:
+
+**Endpoint:** `GET /api/v1/workflows/<workflow_id>/runs/<run_id>?include_logs=true`
+
+**Retorna:**
+- `current_node_id`: Node atual sendo executado
+- `current_node`: Informações do node (tipo, posição, nome)
+- `steps_completed`: Número de steps completados
+- `steps_total`: Total de steps
+- `execution_logs`: Logs detalhados por node (se `include_logs=true`)
+- `temporal_workflow_id`: ID no Temporal (para debug)
+
+**Cálculo de Progresso:**
+- Baseado em `current_node_id` (quando disponível)
+- Fallback para `execution_logs` (nodes com status 'success' ou 'failed')
+
+### Configuração
+
+**Verificar configuração:**
+```bash
+python scripts/verify_temporal.py
+```
+
+**Iniciar Worker:**
+```bash
+python -m app.temporal.worker
+```
+
+**Temporal UI:**
+- Acessar: http://localhost:8088 (se rodando localmente)
+- Visualizar workflows em execução
+- Ver histórico e logs
+
+### Fallback
+
+Se Temporal não estiver configurado (`TEMPORAL_ADDRESS` não definido):
+- `WorkflowExecutor` executa de forma síncrona
+- Mantém compatibilidade com sistema anterior
+- Logs indicam "usando execução síncrona"
+
 ## Próximos Passos
 
+- [x] Integração com Temporal para execução assíncrona
+- [x] Visualização de progresso no frontend
 - [ ] Suporte a mais provedores de assinatura
 - [ ] Suporte a mais formatos de documento
 - [ ] Dashboard de métricas e analytics
@@ -976,8 +1128,9 @@ pytest tests/
 - [ ] Suporte a workflows mais complexos (condicionais, loops)
 - [ ] Versionamento de templates
 - [ ] Cache de resultados de IA
+- [ ] WebSockets para atualizações em tempo real (sem polling)
 
 ---
 
-**Última Atualização:** Dezembro 2025
-**Versão:** 1.0.0
+**Última Atualização:** Dezembro 2024
+**Versão:** 2.0.0 - Com Temporal

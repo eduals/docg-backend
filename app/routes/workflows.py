@@ -1354,18 +1354,32 @@ def list_workflow_runs(workflow_id):
         }
         interface_status = status_mapping.get(execution.status, 'pending')
         
-        # Calcular steps_completed baseado no status
-        # Se completed, todos os steps foram completados
-        # Se failed, podemos usar metadata se disponível
+        # Calcular steps_completed baseado em current_node_id ou logs
         steps_completed = None
         if execution.status == 'completed':
             steps_completed = total_steps
         elif execution.status == 'failed':
-            # Tentar extrair de trigger_data ou usar 0
-            steps_completed = 0
+            # Para failed, contar nodes que foram executados antes do erro
+            if execution.execution_logs:
+                completed_nodes = [log for log in execution.execution_logs 
+                                 if log.get('status') in ['success', 'failed']]
+                steps_completed = len(completed_nodes)
+            else:
+                steps_completed = 0
         elif execution.status == 'running':
-            # Para running, podemos usar metadata se disponível
-            steps_completed = None
+            # Para running, calcular baseado no current_node_id ou logs
+            if execution.current_node_id:
+                # Encontrar posição do node atual
+                current_node = next((n for n in nodes if str(n.id) == str(execution.current_node_id)), None)
+                if current_node:
+                    # Contar nodes executados antes do atual (excluindo trigger)
+                    steps_completed = len([n for n in nodes 
+                                         if n.position < current_node.position and not n.is_trigger()])
+            elif execution.execution_logs:
+                # Calcular baseado nos logs (nodes com status 'success' ou 'failed')
+                completed_nodes = [log for log in execution.execution_logs 
+                                 if log.get('status') in ['success', 'failed']]
+                steps_completed = len(completed_nodes)
         
         # Mapear trigger_type para trigger_source
         trigger_source = execution.trigger_type or 'manual'
@@ -1409,6 +1423,9 @@ def list_workflow_runs(workflow_id):
 def get_workflow_run(workflow_id, run_id):
     """
     Retorna detalhes de uma execução específica.
+    
+    Query params:
+    - include_logs: Incluir execution_logs na resposta (default: false)
     """
     workflow = Workflow.query.filter_by(
         id=workflow_id,
@@ -1434,14 +1451,47 @@ def get_workflow_run(workflow_id, run_id):
     }
     interface_status = status_mapping.get(execution.status, 'pending')
     
-    # Calcular steps_completed
+    # Calcular steps_completed baseado em current_node_id ou logs
     steps_completed = None
     if execution.status == 'completed':
         steps_completed = total_steps
     elif execution.status == 'failed':
-        steps_completed = 0
+        # Para failed, contar nodes que foram executados antes do erro
+        if execution.execution_logs:
+            completed_nodes = [log for log in execution.execution_logs 
+                             if log.get('status') in ['success', 'failed']]
+            steps_completed = len(completed_nodes)
+        else:
+            steps_completed = 0
     elif execution.status == 'running':
-        steps_completed = None
+        # Para running, calcular baseado no current_node_id ou logs
+        if execution.current_node_id:
+            # Encontrar posição do node atual
+            current_node = next((n for n in nodes if str(n.id) == str(execution.current_node_id)), None)
+            if current_node:
+                # Contar nodes executados antes do atual (excluindo trigger)
+                steps_completed = len([n for n in nodes 
+                                     if n.position < current_node.position and not n.is_trigger()])
+        elif execution.execution_logs:
+            # Calcular baseado nos logs (nodes com status 'success' ou 'failed')
+            completed_nodes = [log for log in execution.execution_logs 
+                             if log.get('status') in ['success', 'failed']]
+            steps_completed = len(completed_nodes)
+    
+    # Buscar informações do node atual
+    current_node_info = None
+    if execution.current_node_id:
+        current_node = WorkflowNode.query.get(execution.current_node_id)
+        if current_node:
+            current_node_info = {
+                'id': str(current_node.id),
+                'node_type': current_node.node_type,
+                'position': current_node.position,
+                'name': current_node.config.get('name') if current_node.config else None
+            }
+    
+    # Verificar se deve incluir logs
+    include_logs = request.args.get('include_logs', 'false').lower() == 'true'
     
     # Mapear trigger_source
     trigger_source = execution.trigger_type or 'manual'
@@ -1459,8 +1509,16 @@ def get_workflow_run(workflow_id, run_id):
         'steps_completed': steps_completed,
         'steps_total': total_steps if total_steps > 0 else None,
         'generated_document_id': str(execution.generated_document_id) if execution.generated_document_id else None,
-        'ai_metrics': execution.ai_metrics
+        'ai_metrics': execution.ai_metrics,
+        'current_node_id': str(execution.current_node_id) if execution.current_node_id else None,
+        'current_node': current_node_info,
+        'temporal_workflow_id': execution.temporal_workflow_id,
+        'temporal_run_id': execution.temporal_run_id
     }
+    
+    # Incluir logs se solicitado
+    if include_logs:
+        run_dict['execution_logs'] = execution.execution_logs or []
     
     return jsonify(run_dict)
 
