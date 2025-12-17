@@ -24,13 +24,16 @@ import secrets
 logger = logging.getLogger(__name__)
 bp = Blueprint('google_oauth', __name__, url_prefix='/api/v1/google-oauth')
 
-# Scopes necessários para Google Drive, Docs e RISC
+# Scopes necessários para Google Drive, Docs, Forms e RISC
 SCOPES = [
     'https://www.googleapis.com/auth/userinfo.profile',  # Necessário para RISC
     'https://www.googleapis.com/auth/userinfo.email',    # Alternativa ao profile
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/documents.readonly',
-    'https://www.googleapis.com/auth/drive.file'
+    'https://www.googleapis.com/auth/drive.file',
+    # Google Forms API
+    'https://www.googleapis.com/auth/forms.body.readonly',
+    'https://www.googleapis.com/auth/forms.responses.readonly'
 ]
 
 # Armazenamento temporário para code_verifier (PKCE)

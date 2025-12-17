@@ -25,6 +25,7 @@ from .document import execute_document_node
 from .approval import create_approval, expire_approval
 from .signature import create_signature_request, expire_signature
 from .email import execute_email_node
+from .webhook import execute_webhook_node
 
 # Lista de todas as activities para registrar no Worker
 ALL_ACTIVITIES = [
@@ -49,6 +50,8 @@ ALL_ACTIVITIES = [
     expire_signature,
     # Email
     execute_email_node,
+    # Webhook
+    execute_webhook_node,
 ]
 
 __all__ = [
@@ -67,6 +70,7 @@ __all__ = [
     'create_signature_request',
     'expire_signature',
     'execute_email_node',
+    'execute_webhook_node',
     'ALL_ACTIVITIES',
 ]
 

@@ -86,6 +86,9 @@ def create_app(config_class=Config):
     from app.routes import google_drive_routes
     app.register_blueprint(google_drive_routes.bp)
     
+    from app.routes import google_forms_routes
+    app.register_blueprint(google_forms_routes.google_forms_bp)
+    
     from app.routes import settings
     app.register_blueprint(settings.settings_bp)
     

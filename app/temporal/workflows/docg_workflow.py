@@ -30,6 +30,7 @@ with workflow.unsafe.imports_passed_through():
         create_signature_request,
         expire_signature,
         execute_email_node,
+        execute_webhook_node,
     )
 
 
@@ -159,6 +160,11 @@ class DocGWorkflow:
                             execution_id, node, workflow_id, organization_id, config
                         )
                     
+                    elif node_type == 'webhook':
+                        await self._execute_webhook(
+                            execution_id, node, workflow_id, organization_id, config
+                        )
+                    
                     else:
                         workflow.logger.warning(f"Tipo de node não suportado: {node_type}")
                     
@@ -226,7 +232,9 @@ class DocGWorkflow:
             {
                 'execution_id': execution_id,
                 'node': node,
-                'trigger_data': trigger_data
+                'trigger_data': trigger_data,
+                'workflow_id': workflow_id,
+                'organization_id': organization_id
             },
             start_to_close_timeout=timedelta(seconds=config.trigger_timeout),
             retry_policy=RetryPolicy(maximum_attempts=3)
@@ -441,6 +449,36 @@ class DocGWorkflow:
                 'generated_documents': self._generated_documents
             },
             start_to_close_timeout=timedelta(seconds=config.email_timeout),
+            retry_policy=RetryPolicy(maximum_attempts=3)
+        )
+    
+    async def _execute_webhook(
+        self, execution_id: str, node: Dict, workflow_id: str, 
+        organization_id: str, config
+    ):
+        """Executa node de webhook (envia POST com resultado da execução)"""
+        # Construir execution_context com dados acumulados
+        execution_context = {
+            'workflow_id': workflow_id,
+            'execution_id': execution_id,
+            'source_data': self._source_data,
+            'source_object_id': self._source_object_id,
+            'source_object_type': self._source_object_type,
+            'generated_documents': self._generated_documents,
+            'signature_requests': self._signature_requests,
+            'metadata': {}
+        }
+        
+        # Executar webhook
+        webhook_timeout = getattr(config, 'webhook_timeout', 30)
+        await workflow.execute_activity(
+            execute_webhook_node,
+            {
+                'execution_id': execution_id,
+                'node': node,
+                'execution_context': execution_context
+            },
+            start_to_close_timeout=timedelta(seconds=webhook_timeout),
             retry_policy=RetryPolicy(maximum_attempts=3)
         )
     

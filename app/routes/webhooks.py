@@ -102,18 +102,42 @@ def receive_webhook(workflow_id, webhook_token):
         # Determinar source_object_id (pode vir do payload ou gerar)
         source_object_id = source_data.get('id') or source_data.get('object_id') or f'webhook_{datetime.utcnow().isoformat()}'
         
-        # Criar execução do workflow
-        executor = WorkflowExecutor()
+        # Criar execução do workflow com trigger_data incluindo payload
+        from app.models import WorkflowExecution
+        from app.temporal.service import start_workflow_execution, is_temporal_enabled
         
-        # Executar workflow de forma assíncrona (ou síncrona por enquanto)
-        # TODO: Considerar usar Celery para execução assíncrona
+        # Criar execução manualmente para incluir payload no trigger_data
+        execution = WorkflowExecution(
+            workflow_id=workflow.id,
+            trigger_type='webhook',
+            trigger_data={
+                'source_object_id': str(source_object_id),
+                'source_object_type': source_object_type,
+                'payload': payload,  # Payload original
+                'source_data': source_data  # Payload mapeado
+            },
+            status='running'
+        )
+        db.session.add(execution)
+        db.session.commit()
+        
+        # Iniciar via Temporal se habilitado
         try:
-            execution = executor.execute_workflow(
-                workflow=workflow,
-                source_object_id=str(source_object_id),
-                source_object_type=source_object_type,
-                user_id=None
-            )
+            if is_temporal_enabled():
+                start_workflow_execution(
+                    execution_id=str(execution.id),
+                    workflow_id=str(workflow.id)
+                )
+                logger.info(f"Workflow {workflow.id} iniciado via Temporal (execution: {execution.id})")
+            else:
+                # Fallback: executar sincronamente
+                executor = WorkflowExecutor()
+                execution = executor.execute_workflow(
+                    workflow=workflow,
+                    source_object_id=str(source_object_id),
+                    source_object_type=source_object_type,
+                    user_id=None
+                )
             
             logger.info(f'Webhook executado com sucesso: workflow={workflow_id}, execution={execution.id}')
             
