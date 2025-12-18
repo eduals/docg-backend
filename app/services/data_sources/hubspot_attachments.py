@@ -37,6 +37,34 @@ class HubSpotAttachmentService:
         if not self.access_token:
             raise Exception('HubSpot access token não configurado')
     
+    def _normalize_object_type_for_api(self, object_type: str) -> str:
+        """
+        Normaliza o tipo de objeto para o formato esperado pela API v3/v4 do HubSpot.
+        Converte formas plurais para singulares e padroniza nomes em lowercase.
+        
+        Args:
+            object_type: Tipo do objeto (contacts, contact, companies, company, etc)
+        
+        Returns:
+            Tipo normalizado em lowercase (contact, company, deal, ticket)
+        """
+        normalization_map = {
+            'contact': 'contact',
+            'contacts': 'contact',
+            'company': 'company',
+            'companies': 'company',
+            'deal': 'deal',
+            'deals': 'deal',
+            'ticket': 'ticket',
+            'tickets': 'ticket',
+            'quote': 'quote',
+            'quotes': 'quote',
+            'line_item': 'line_item',
+            'line_items': 'line_item'
+        }
+        
+        return normalization_map.get(object_type.lower(), object_type.lower())
+    
     def upload_file(
         self, 
         file_bytes: bytes, 
@@ -122,7 +150,7 @@ class HubSpotAttachmentService:
             'Content-Type': 'application/json'
         }
         
-        # Normalizar object_type para o formato esperado pela API
+        # Normalizar object_type para o formato esperado pela API de engagements (UPPERCASE)
         object_type_normalized = self._normalize_object_type(object_type)
         
         # Criar payload do engagement conforme estrutura da API v1
@@ -183,23 +211,20 @@ class HubSpotAttachmentService:
         Returns:
             Dict com resultado da atualização
         """
-        # Normalizar object_type para o endpoint correto
+        # Normalizar object_type para API v3/v4 (lowercase)
+        normalized_type = self._normalize_object_type_for_api(object_type)
+        
+        # Mapear tipos de objeto para endpoints da API (usando formato correto /crm/v3/...)
         endpoint_map = {
-            'contact': 'contacts/v3/objects/contacts',
-            'contacts': 'contacts/v3/objects/contacts',
-            'deal': 'crm/v3/objects/deals',
-            'deals': 'crm/v3/objects/deals',
+            'contact': 'crm/v3/objects/contacts',
             'company': 'crm/v3/objects/companies',
-            'companies': 'crm/v3/objects/companies',
+            'deal': 'crm/v3/objects/deals',
             'ticket': 'crm/v3/objects/tickets',
-            'tickets': 'crm/v3/objects/tickets',
             'quote': 'crm/v3/objects/quotes',
-            'quotes': 'crm/v3/objects/quotes',
-            'line_item': 'crm/v3/objects/line_items',
-            'line_items': 'crm/v3/objects/line_items'
+            'line_item': 'crm/v3/objects/line_items'
         }
         
-        endpoint = endpoint_map.get(object_type.lower())
+        endpoint = endpoint_map.get(normalized_type)
         if not endpoint:
             raise Exception(f'Tipo de objeto não suportado: {object_type}')
         

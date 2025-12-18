@@ -17,6 +17,34 @@ class HubSpotDataSource(BaseDataSource):
         self.access_token = connection.credentials.get('access_token') if connection.credentials else None
         self.portal_id = connection.config.get('portal_id') if connection.config else None
     
+    def _normalize_object_type(self, object_type: str) -> str:
+        """
+        Normaliza o tipo de objeto para o formato esperado pela API do HubSpot.
+        Converte formas plurais para singulares e padroniza nomes.
+        
+        Args:
+            object_type: Tipo do objeto (contacts, contact, companies, company, etc)
+        
+        Returns:
+            Tipo normalizado (contact, company, deal, ticket)
+        """
+        normalization_map = {
+            'contact': 'contact',
+            'contacts': 'contact',
+            'company': 'company',
+            'companies': 'company',
+            'deal': 'deal',
+            'deals': 'deal',
+            'ticket': 'ticket',
+            'tickets': 'ticket',
+            'quote': 'quote',
+            'quotes': 'quote',
+            'line_item': 'line_item',
+            'line_items': 'line_item'
+        }
+        
+        return normalization_map.get(object_type.lower(), object_type.lower())
+    
     def get_object_data(self, object_type: str, object_id: str, additional_properties: List[str] = None) -> Dict[str, Any]:
         """
         Busca dados de um objeto específico do HubSpot.
@@ -32,23 +60,20 @@ class HubSpotDataSource(BaseDataSource):
         if not self.access_token:
             raise Exception('HubSpot access token não configurado')
         
-        # Mapear tipos de objeto para endpoints da API
+        # Normalizar tipo de objeto
+        normalized_type = self._normalize_object_type(object_type)
+        
+        # Mapear tipos de objeto para endpoints da API (usando formato correto /crm/v3/...)
         endpoint_map = {
-            'contact': 'contacts/v3/objects/contacts',
-            'contacts': 'contacts/v3/objects/contacts',
-            'deal': 'crm/v3/objects/deals',
-            'deals': 'crm/v3/objects/deals',
+            'contact': 'crm/v3/objects/contacts',
             'company': 'crm/v3/objects/companies',
-            'companies': 'crm/v3/objects/companies',
+            'deal': 'crm/v3/objects/deals',
             'ticket': 'crm/v3/objects/tickets',
-            'tickets': 'crm/v3/objects/tickets',
             'quote': 'crm/v3/objects/quotes',
-            'quotes': 'crm/v3/objects/quotes',
-            'line_item': 'crm/v3/objects/line_items',
-            'line_items': 'crm/v3/objects/line_items'
+            'line_item': 'crm/v3/objects/line_items'
         }
         
-        endpoint = endpoint_map.get(object_type.lower())
+        endpoint = endpoint_map.get(normalized_type)
         if not endpoint:
             raise Exception(f'Tipo de objeto não suportado: {object_type}')
         
@@ -110,23 +135,15 @@ class HubSpotDataSource(BaseDataSource):
             raise Exception(f'Erro ao buscar dados do HubSpot: {str(e)}')
     
     def _fetch_associations(self, object_type: str, object_id: str, association_type: str) -> List[Dict]:
-        """Busca detalhes de objetos associados"""
+        """Busca detalhes de objetos associados usando API v4"""
         try:
-            # Mapear tipos de associação
-            assoc_map = {
-                'contacts': 'contacts/v3/objects/contacts',
-                'companies': 'crm/v3/objects/companies',
-                'deals': 'crm/v3/objects/deals',
-                'tickets': 'crm/v3/objects/tickets',
-                'quotes': 'crm/v3/objects/quotes',
-                'line_items': 'crm/v3/objects/line_items'
-            }
+            # Normalizar tipos de objeto
+            normalized_from_type = self._normalize_object_type(object_type)
+            normalized_to_type = self._normalize_object_type(association_type)
             
-            endpoint = assoc_map.get(association_type)
-            if not endpoint:
-                return []
-            
-            url = f"{self.BASE_URL}/crm/v4/objects/{object_type}/{object_id}/associations/{association_type}"
+            # Usar endpoint correto da API v4 para buscar associações individuais
+            # Formato: /crm/v4/objects/{fromObjectType}/{fromObjectId}/associations/{toObjectType}
+            url = f"{self.BASE_URL}/crm/v4/objects/{normalized_from_type}/{object_id}/associations/{normalized_to_type}"
             
             headers = {
                 'Authorization': f'Bearer {self.access_token}',
@@ -136,8 +153,15 @@ class HubSpotDataSource(BaseDataSource):
             response = requests.get(url, headers=headers)
             if response.ok:
                 data = response.json()
-                # Retornar lista de IDs associados
-                return [item.get('id') for item in data.get('results', [])]
+                # A resposta da API v4 retorna objetos com toObjectId
+                results = data.get('results', [])
+                # Extrair IDs dos objetos associados
+                associated_ids = []
+                for result in results:
+                    to_object_id = result.get('toObjectId')
+                    if to_object_id:
+                        associated_ids.append(to_object_id)
+                return associated_ids
             
             return []
             
@@ -193,16 +217,18 @@ class HubSpotDataSource(BaseDataSource):
         if not self.access_token:
             raise Exception('HubSpot access token não configurado')
         
+        # Normalizar tipo de objeto
+        normalized_type = self._normalize_object_type(object_type)
+        
+        # Mapear tipos de objeto para endpoints da API (usando formato correto /crm/v3/...)
         endpoint_map = {
-            'contact': 'contacts/v3/objects/contacts',
-            'contacts': 'contacts/v3/objects/contacts',
-            'deal': 'crm/v3/objects/deals',
-            'deals': 'crm/v3/objects/deals',
+            'contact': 'crm/v3/objects/contacts',
             'company': 'crm/v3/objects/companies',
-            'companies': 'crm/v3/objects/companies'
+            'deal': 'crm/v3/objects/deals',
+            'ticket': 'crm/v3/objects/tickets'
         }
         
-        endpoint = endpoint_map.get(object_type.lower())
+        endpoint = endpoint_map.get(normalized_type)
         if not endpoint:
             raise Exception(f'Tipo de objeto não suportado: {object_type}')
         
@@ -269,19 +295,18 @@ class HubSpotDataSource(BaseDataSource):
         if not self.access_token:
             raise Exception('HubSpot access token não configurado')
         
-        # Mapear tipos de objeto para endpoints da API
+        # Normalizar tipo de objeto
+        normalized_type = self._normalize_object_type(object_type)
+        
+        # Mapear tipos de objeto para endpoints da API Properties (usando formato correto /crm/v3/properties/...)
         endpoint_map = {
-            'deal': 'crm/v3/properties/deals',
-            'deals': 'crm/v3/properties/deals',
-            'contact': 'contacts/v3/properties',
-            'contacts': 'contacts/v3/properties',
-            'company': 'crm/v3/properties/companies',
-            'companies': 'crm/v3/properties/companies',
-            'ticket': 'crm/v3/properties/tickets',
-            'tickets': 'crm/v3/properties/tickets'
+            'contact': 'crm/v3/properties/contact',
+            'company': 'crm/v3/properties/company',
+            'deal': 'crm/v3/properties/deal',
+            'ticket': 'crm/v3/properties/ticket'
         }
         
-        endpoint = endpoint_map.get(object_type.lower())
+        endpoint = endpoint_map.get(normalized_type)
         if not endpoint:
             raise Exception(f'Tipo de objeto não suportado: {object_type}')
         

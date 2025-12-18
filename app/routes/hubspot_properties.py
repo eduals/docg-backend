@@ -81,12 +81,17 @@ def list_properties():
         
         # Criar novos registros
         for prop in properties:
+            # Truncar campos para evitar erro de tamanho no banco
+            property_name = (prop.get('name', '') or '')[:255]
+            label = (prop.get('label', prop.get('name', '')) or '')[:255]
+            prop_type = (prop.get('type', 'string') or 'string')[:50]
+            
             cached_prop = HubSpotPropertyCache(
                 organization_id=org_id,
                 object_type=object_type,
-                property_name=prop.get('name', ''),
-                label=prop.get('label', prop.get('name', '')),
-                type=prop.get('type', 'string'),
+                property_name=property_name,
+                label=label,
+                type=prop_type,
                 options=prop.get('options')
             )
             db.session.add(cached_prop)
@@ -158,12 +163,17 @@ def refresh_properties():
             
             # Criar novos registros
             for prop in properties:
+                # Truncar campos para evitar erro de tamanho no banco
+                property_name = (prop.get('name', '') or '')[:255]
+                label = (prop.get('label', prop.get('name', '')) or '')[:255]
+                prop_type = (prop.get('type', 'string') or 'string')[:50]
+                
                 cached_prop = HubSpotPropertyCache(
                     organization_id=org_id,
                     object_type=obj_type,
-                    property_name=prop.get('name', ''),
-                    label=prop.get('label', prop.get('name', '')),
-                    type=prop.get('type', 'string'),
+                    property_name=property_name,
+                    label=label,
+                    type=prop_type,
                     options=prop.get('options')
                 )
                 db.session.add(cached_prop)
