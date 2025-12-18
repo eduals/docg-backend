@@ -2,7 +2,7 @@
 
 ## Visão Geral
 
-O DocGen Backend é uma aplicação Flask que fornece uma API RESTful para geração automatizada de documentos, integração com múltiplas fontes de dados (HubSpot, Google Drive, Microsoft OneDrive), assinatura digital (ClickSign) e gerenciamento de workflows.
+O DocGen Backend é uma aplicação Flask que fornece uma API RESTful para geração automatizada de documentos, integração com múltiplas fontes de dados (HubSpot, Google Forms, Google Drive, Microsoft OneDrive), assinatura digital (ClickSign) e gerenciamento de workflows.
 
 ### Tecnologias Principais
 
@@ -42,6 +42,7 @@ docg-backend/
 │   │   ├── checkout.py
 │   │   ├── billing.py
 │   │   ├── webhooks.py
+│   │   ├── google_forms_routes.py
 │   │   ├── microsoft_oauth_routes.py
 │   │   ├── hubspot_oauth_routes.py
 │   │   └── ...
@@ -51,7 +52,17 @@ docg-backend/
 │   │   ├── stripe_service.py
 │   │   ├── ai/
 │   │   ├── document_generation/
+│   │   │   ├── generator.py
+│   │   │   ├── tag_processor.py
+│   │   │   ├── google_docs.py
+│   │   │   ├── microsoft_word.py
+│   │   │   └── document_converter.py  # Conversão .doc/.docx e PDF
 │   │   ├── data_sources/
+│   │   │   ├── base.py
+│   │   │   ├── hubspot.py
+│   │   │   └── google_forms.py
+│   │   ├── storage/
+│   │   │   └── digitalocean_spaces.py  # Armazenamento de templates e documentos
 │   │   └── integrations/
 │   ├── temporal/          # Integração Temporal (execução assíncrona)
 │   │   ├── __init__.py
@@ -179,13 +190,14 @@ Representa uma conexão com uma fonte de dados externa.
 
 **Tipos de Conexão Suportados:**
 - **CRM**: hubspot
+- **Formulários**: google_forms
 - **Armazenamento**: google_drive, microsoft (OneDrive)
 - **Assinatura**: clicksign, docusign, d4sign, etc.
 - **IA**: openai, anthropic, gemini
 
 #### Template
 
-Representa um template de documento (Google Docs, Google Slides, Word, PowerPoint).
+Representa um template de documento (Google Docs, Google Slides, Word, PowerPoint, ou arquivo enviado).
 
 **Campos Principais:**
 - `id` (UUID): Identificador único
@@ -195,6 +207,11 @@ Representa um template de documento (Google Docs, Google Slides, Word, PowerPoin
 - `google_file_type` (String): document, presentation
 - `microsoft_file_id` (String): ID do arquivo no OneDrive/SharePoint
 - `microsoft_file_type` (String): word, powerpoint
+- `storage_type` (String): 'google', 'microsoft', ou 'uploaded' (para arquivos enviados)
+- `storage_file_url` (String): URL do arquivo no DigitalOcean Spaces (para templates enviados)
+- `storage_file_key` (String): Key do arquivo no DigitalOcean Spaces (para templates enviados)
+- `file_size` (Integer): Tamanho do arquivo em bytes (para templates enviados)
+- `file_mime_type` (String): MIME type do arquivo (para templates enviados)
 - `detected_tags` (JSONB): Tags detectadas no template (ex: {{contact.firstname}})
 
 #### GeneratedDocument
@@ -320,13 +337,13 @@ Cria um novo nó no workflow.
 ```
 
 **Tipos de Nós:**
-- `trigger`: Nó inicial (webhook, manual)
+- `trigger`: Nó inicial (webhook, manual, hubspot, google-forms)
 - `google-docs`: Geração de Google Docs
 - `google-slides`: Geração de Google Slides
 - `microsoft-word`: Geração de Word
 - `microsoft-powerpoint`: Geração de PowerPoint
 - `clicksign`: Envio para assinatura
-- `webhook`: Webhook externo
+- `webhook`: Webhook de saída (envia POST com resultado)
 - `human-in-loop`: Aprovação humana
 
 #### `GET /api/v1/workflows/<workflow_id>/field-mappings`
@@ -494,6 +511,104 @@ Retorna informações da assinatura atual.
 #### `POST /api/v1/billing/create-portal-session`
 Cria sessão do Stripe Customer Portal.
 
+### Templates
+
+#### `GET /api/v1/templates`
+Lista templates registrados da organização.
+
+#### `GET /api/v1/templates/available`
+Lista templates disponíveis de todas as fontes (Google Drive, Microsoft OneDrive, e arquivos enviados).
+
+**Response:**
+```json
+{
+  "success": true,
+  "templates": [
+    {
+      "id": "uuid",
+      "name": "Template Name",
+      "storage_type": "google|microsoft|uploaded",
+      "google_file_id": "...",
+      "microsoft_file_id": "...",
+      "storage_file_url": "https://...",
+      "is_registered": true
+    }
+  ],
+  "connections": {
+    "google_connected": true,
+    "microsoft_connected": false
+  },
+  "total": 10
+}
+```
+
+#### `POST /api/v1/templates/upload`
+Upload de arquivo .doc ou .docx para usar como template.
+
+**Request:**
+- Content-Type: `multipart/form-data`
+- `file`: Arquivo .doc ou .docx (obrigatório, max 10MB)
+- `name`: Nome do template (opcional)
+- `description`: Descrição (opcional)
+
+**Response:**
+```json
+{
+  "success": true,
+  "template": {
+    "id": "uuid",
+    "name": "Template Name",
+    "storage_type": "uploaded",
+    "storage_file_url": "https://pipehub.nyc3.digitaloceanspaces.com/...",
+    "storage_file_key": "docg/{org_id}/templates/{uuid}.docx",
+    "file_size": 45678,
+    "file_mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "detected_tags": ["{{name}}", "{{email}}"]
+  }
+}
+```
+
+**Validações:**
+- Tipos permitidos: `.doc`, `.docx`
+- Tamanho máximo: 10MB
+- Arquivos `.doc` são automaticamente convertidos para `.docx` usando LibreOffice
+- Estrutura do documento é validada antes de salvar
+
+#### `POST /api/v1/templates/<template_id>/open-editor`
+Retorna URL para abrir o template no editor apropriado.
+
+**Response:**
+```json
+{
+  "success": true,
+  "editor_url": "https://docs.google.com/...",
+  "expires_at": "2024-01-01T12:00:00Z"
+}
+```
+
+**Comportamento:**
+- Templates Google: Retorna URL do Google Docs/Slides
+- Templates Microsoft: Retorna URL do Word/PowerPoint online
+- Templates enviados: Retorna URL assinada temporária (1 hora) do DigitalOcean Spaces
+
+#### `POST /api/v1/templates`
+Registra um template existente (Google ou Microsoft).
+
+**Body:**
+```json
+{
+  "name": "Template Name",
+  "google_file_id": "file-id",
+  "microsoft_file_id": "file-id"
+}
+```
+
+#### `GET /api/v1/templates/<template_id>`
+Retorna detalhes de um template.
+
+#### `DELETE /api/v1/templates/<template_id>`
+Deleta um template. Se for template enviado, também remove do DigitalOcean Spaces.
+
 ### Webhooks
 
 #### `POST /api/v1/webhooks/<workflow_id>/<webhook_token>`
@@ -512,6 +627,46 @@ Regenera token do webhook.
 
 #### `POST /api/v1/webhooks/stripe`
 Webhook do Stripe para eventos de assinatura.
+
+### Google Forms
+
+#### `GET /api/v1/google-forms/forms`
+Lista formulários do usuário conectado ao Google.
+
+**Response:**
+```json
+{
+  "success": true,
+  "forms": [
+    {
+      "id": "form-id",
+      "title": "Formulário de Contato",
+      "url": "https://docs.google.com/forms/...",
+      "created_time": "2024-01-01T10:00:00Z",
+      "modified_time": "2024-01-01T12:00:00Z"
+    }
+  ]
+}
+```
+
+#### `GET /api/v1/google-forms/forms/<form_id>/fields`
+Lista campos/propriedades de um formulário para mapeamento.
+
+**Response:**
+```json
+{
+  "success": true,
+  "form_id": "form-id",
+  "fields": [
+    {
+      "question_id": "question-123",
+      "title": "Nome Completo",
+      "type": "text",
+      "required": true
+    }
+  ]
+}
+```
 
 ### Aprovações
 
@@ -605,14 +760,59 @@ Serviços de geração de documentos:
 - **GoogleSlidesGenerator**: Gera apresentações Google Slides
 - **MicrosoftWordGenerator**: Gera documentos Word
 - **MicrosoftPowerPointGenerator**: Gera apresentações PowerPoint
+- **UploadedDocumentGenerator**: Gera documentos a partir de templates enviados (.doc/.docx)
 
-**Fluxo:**
+**Fluxo para Templates Enviados:**
+1. Baixa template do DigitalOcean Spaces
+2. Normaliza .doc para .docx (se necessário) usando LibreOffice
+3. Valida estrutura do documento
+4. Processa com python-docx para substituir tags
+5. Salva documento gerado no DigitalOcean Spaces (`docg/{org_id}/outputs/`)
+6. Gera PDF (se configurado) usando LibreOffice
+7. Retorna URLs do documento e PDF
+
+**Fluxo para Templates Online (Google/Microsoft):**
 1. Copia template
 2. Substitui tags por dados reais
 3. Aplica mapeamentos de campos
 4. Gera conteúdo por IA (se configurado)
 5. Exporta PDF (se solicitado)
 6. Retorna URLs do documento
+
+### DocumentConverter
+
+Serviço utilitário para conversão e validação de documentos.
+
+**Funcionalidades:**
+- **convert_doc_to_docx()**: Converte arquivos .doc (Word 97-2003) para .docx usando LibreOffice
+- **convert_docx_to_pdf()**: Converte arquivos .docx para PDF usando LibreOffice
+- **validate_document_structure()**: Valida estrutura básica de documentos .docx
+- **normalize_document()**: Normaliza qualquer documento para .docx
+
+**Requisitos:**
+- LibreOffice instalado no servidor (`soffice --headless`)
+- Comandos: `soffice --convert-to docx` e `soffice --convert-to pdf`
+
+### DigitalOceanSpacesService
+
+Serviço para armazenamento de arquivos no DigitalOcean Spaces (S3-compatible).
+
+**Funcionalidades:**
+- **upload_file()**: Upload de arquivos para Spaces
+- **generate_signed_url()**: Gera URL assinada temporária para download
+- **delete_file()**: Remove arquivo do Spaces
+- **file_exists()**: Verifica se arquivo existe
+
+**Estrutura de Pastas:**
+- Templates: `docg/{organization_id}/templates/{uuid}.docx`
+- Outputs: `docg/{organization_id}/outputs/{uuid}.docx`
+- PDFs: `docg/{organization_id}/outputs/{uuid}.pdf`
+
+**Configuração:**
+- `DO_SPACES_ACCESS_KEY`: Access key do Spaces
+- `DO_SPACES_SECRET_KEY`: Secret key do Spaces
+- `DO_SPACES_BUCKET`: Nome do bucket
+- `DO_SPACES_ENDPOINT`: Endpoint do Spaces (ex: `nyc3.digitaloceanspaces.com`)
 
 ## Fluxos de Trabalho Importantes
 
@@ -816,6 +1016,23 @@ sequenceDiagram
 - Cópia de templates
 - Exportação para PDF
 
+### Google Forms
+
+**Conexão:**
+- OAuth 2.0 (mesmas credenciais do Google Drive)
+- Scopes: `forms.body.readonly`, `forms.responses.readonly`
+
+**Funcionalidades:**
+- Listagem de formulários (via Google Drive API)
+- Listagem de campos/propriedades de um formulário
+- Busca de respostas do formulário
+- Mapeamento de campos para tags de documento
+- Integração com field mapping e AI mapping
+
+**DataSource:**
+- `GoogleFormsDataSource` implementa `BaseDataSource`
+- Métodos: `list_forms()`, `get_form_fields()`, `get_form_responses()`
+
 ### Microsoft OneDrive
 
 **Conexão:**
@@ -880,6 +1097,8 @@ Todas as credenciais sensíveis (API keys, tokens OAuth) são criptografadas usa
 
 ### Webhooks de Workflow
 
+#### Webhook como Trigger (Input)
+
 Cada workflow pode ter um webhook único para trigger externo.
 
 **Formato da URL:**
@@ -890,7 +1109,38 @@ Cada workflow pode ter um webhook único para trigger externo.
 **Uso:**
 - Qualquer sistema pode fazer POST para essa URL
 - Dados enviados são passados como `trigger_data` para o workflow
-- Workflow é executado automaticamente
+- Workflow é executado automaticamente via Temporal
+- Suporta field mapping para mapear payload para `source_data`
+
+#### Webhook como Node de Saída (Output)
+
+Node de tipo `webhook` que envia POST com resultado da execução até aquele ponto.
+
+**Configuração:**
+```json
+{
+  "url": "https://api.exemplo.com/webhook",
+  "method": "POST",
+  "headers": {
+    "Authorization": "Bearer token"
+  },
+  "body_template": "opcional - template com tags",
+  "timeout": 30
+}
+```
+
+**Dados Enviados:**
+- `workflow_id`: ID do workflow
+- `execution_id`: ID da execução
+- `source_data`: Dados da fonte
+- `generated_documents`: Documentos gerados até então
+- `signature_requests`: Requisições de assinatura
+- `metadata`: Metadados adicionais
+
+**Características:**
+- Retry automático (3 tentativas)
+- Timeout configurável
+- Suporte a template de body com processamento de tags
 
 ### Webhooks do Stripe
 
@@ -1050,11 +1300,12 @@ O sistema usa **Temporal.io** para execução durável e assíncrona de workflow
 
 #### Activities (`app/temporal/activities/`)
 - **Base**: `load_execution`, `update_current_node`, `pause_execution`, `resume_execution`, `complete_execution`, `fail_execution`, `add_execution_log`
-- **Trigger**: `execute_trigger_node` - Extrai dados da fonte
+- **Trigger**: `execute_trigger_node` - Extrai dados da fonte (HubSpot, Webhook, Google Forms)
 - **Document**: `execute_document_node` - Gera documentos
 - **Approval**: `create_approval`, `expire_approval` - Gerencia aprovações
 - **Signature**: `create_signature_request`, `expire_signature` - Gerencia assinaturas
 - **Email**: `execute_email_node` - Envia emails
+- **Webhook**: `execute_webhook_node` - Envia POST com resultado da execução
 
 ### Fluxo de Execução
 
@@ -1121,6 +1372,8 @@ Se Temporal não estiver configurado (`TEMPORAL_ADDRESS` não definido):
 
 - [x] Integração com Temporal para execução assíncrona
 - [x] Visualização de progresso no frontend
+- [x] Google Forms como fonte de dados/trigger
+- [x] Webhook como node de saída
 - [ ] Suporte a mais provedores de assinatura
 - [ ] Suporte a mais formatos de documento
 - [ ] Dashboard de métricas e analytics
@@ -1133,4 +1386,4 @@ Se Temporal não estiver configurado (`TEMPORAL_ADDRESS` não definido):
 ---
 
 **Última Atualização:** Dezembro 2024
-**Versão:** 2.0.0 - Com Temporal
+**Versão:** 2.1.0 - Com Temporal + Google Forms + Webhook Output

@@ -57,4 +57,10 @@ class Config:
     STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
     STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
     FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
+    
+    # DigitalOcean Spaces
+    DO_SPACES_ACCESS_KEY = os.getenv('DO_SPACES_ACCESS_KEY', '')
+    DO_SPACES_SECRET_KEY = os.getenv('DO_SPACES_SECRET_KEY', '')
+    DO_SPACES_BUCKET = os.getenv('DO_SPACES_BUCKET', 'pipehub')
+    DO_SPACES_ENDPOINT = os.getenv('DO_SPACES_ENDPOINT', 'https://nyc3.digitaloceanspaces.com')
 

@@ -140,7 +140,7 @@ class DocGWorkflow:
                             execution_id, node, workflow_id, organization_id, trigger_data, config
                         )
                     
-                    elif node_type in ['google-docs', 'google-slides', 'microsoft-word', 'microsoft-powerpoint']:
+                    elif node_type in ['google-docs', 'google-slides', 'microsoft-word', 'microsoft-powerpoint', 'uploaded-document', 'file-upload']:
                         await self._execute_document(
                             execution_id, node, workflow_id, organization_id, config
                         )

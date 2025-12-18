@@ -24,6 +24,13 @@ class Template(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # Storage fields (para templates enviados)
+    storage_type = db.Column(db.String(50))  # 'google', 'microsoft', 'uploaded'
+    storage_file_url = db.Column(db.String(500))  # URL no DigitalOcean Spaces ou serviço
+    storage_file_key = db.Column(db.String(500))  # Key no Spaces (docg/{org_id}/templates/{filename})
+    file_size = db.Column(db.Integer)  # Tamanho em bytes
+    file_mime_type = db.Column(db.String(100))  # MIME type do arquivo
+    
     # Relationships
     creator = db.relationship('User', foreign_keys=[created_by])
     workflows = db.relationship('Workflow', backref='template', lazy='dynamic')
@@ -44,7 +51,12 @@ class Template(db.Model):
             'version': self.version,
             'last_synced_at': self.last_synced_at.isoformat() if self.last_synced_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'storage_type': self.storage_type,
+            'storage_file_url': self.storage_file_url,
+            'storage_file_key': self.storage_file_key,
+            'file_size': self.file_size,
+            'file_mime_type': self.file_mime_type
         }
         
         if include_tags:

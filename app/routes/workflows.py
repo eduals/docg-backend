@@ -746,6 +746,7 @@ def create_workflow_node(workflow_id):
             'google-slides',
             'microsoft-word',
             'microsoft-powerpoint',
+            'file-upload',
             # Email
             'gmail',
             'outlook',

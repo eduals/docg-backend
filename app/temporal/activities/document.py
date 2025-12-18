@@ -86,6 +86,30 @@ async def execute_document_node(data: Dict[str, Any]) -> Dict[str, Any]:
         if not workflow:
             raise ValueError(f'Workflow não encontrado: {data["workflow_id"]}')
         
+        # Determinar/inferir node_type baseado em storage_type do template
+        # Se node_type não foi especificado ou não corresponde ao template, inferir
+        if template.storage_type == 'uploaded':
+            # Template enviado - usar uploaded-document ou file-upload
+            if node_type not in ['uploaded-document', 'file-upload']:
+                node_type = 'file-upload'
+                activity.logger.info(f"Inferindo node_type='file-upload' para template {template_id}")
+        elif template.google_file_id:
+            # Template do Google - inferir se necessário
+            if node_type not in ['google-docs', 'google-slides']:
+                if template.google_file_type == 'document':
+                    node_type = 'google-docs'
+                elif template.google_file_type == 'presentation':
+                    node_type = 'google-slides'
+                activity.logger.info(f"Inferindo node_type='{node_type}' para template Google {template_id}")
+        elif template.microsoft_file_id:
+            # Template do Microsoft - inferir se necessário
+            if node_type not in ['microsoft-word', 'microsoft-powerpoint']:
+                if template.microsoft_file_type == 'word':
+                    node_type = 'microsoft-word'
+                elif template.microsoft_file_type == 'powerpoint':
+                    node_type = 'microsoft-powerpoint'
+                activity.logger.info(f"Inferindo node_type='{node_type}' para template Microsoft {template_id}")
+        
         # Gerar nome do documento
         output_name_template = config.get('output_name_template', '{{object_type}} - {{timestamp}}')
         data_with_meta = {
@@ -146,11 +170,224 @@ async def execute_document_node(data: Dict[str, Any]) -> Dict[str, Any]:
             result = await _generate_microsoft_powerpoint(
                 workflow, template, config, doc_name, combined_data, mappings, data
             )
+        elif node_type in ['uploaded-document', 'file-upload']:
+            result = await _generate_uploaded_document(
+                workflow, template, config, doc_name, combined_data, mappings, data
+            )
         else:
             raise ValueError(f'Tipo de documento não suportado: {node_type}')
         
         activity.logger.info(f"Documento gerado: {result['document_id']}")
         return result
+
+
+async def _generate_uploaded_document(
+    workflow, template, config, doc_name, combined_data, mappings, data
+) -> Dict[str, Any]:
+    """
+    Gera documento a partir de template enviado (DigitalOcean Spaces).
+    
+    Fluxo:
+    1. Baixar template do DigitalOcean Spaces
+    2. Normalizar .doc para .docx se necessário
+    3. Validar estrutura do documento
+    4. Processar com python-docx para substituir tags
+    5. Salvar documento gerado no DigitalOcean Spaces (outputs/)
+    6. Gerar PDF se configurado
+    7. Criar registro GeneratedDocument
+    """
+    from app.database import db
+    from app.models import GeneratedDocument
+    from app.services.storage import DigitalOceanSpacesService
+    from app.services.document_generation.tag_processor import TagProcessor
+    from app.services.document_generation.document_converter import DocumentConverter
+    from datetime import datetime
+    import uuid
+    from io import BytesIO
+    from docx import Document
+    import requests
+    import os
+    
+    # Validar template
+    if template.storage_type != 'uploaded':
+        raise ValueError(f'Template {template.id} não é do tipo uploaded')
+    
+    if not template.storage_file_key:
+        raise ValueError(f'Template {template.id} não tem storage_file_key')
+    
+    logger.info(f"Gerando documento a partir de template enviado: {template.id}")
+    
+    # Baixar template do DigitalOcean Spaces
+    storage_service = DigitalOceanSpacesService()
+    
+    # Gerar URL assinada para download
+    template_url = storage_service.generate_signed_url(
+        template.storage_file_key,
+        expiration=300  # 5 minutos
+    )
+    
+    # Baixar arquivo
+    response = requests.get(template_url, timeout=60)
+    response.raise_for_status()
+    template_bytes = response.content
+    
+    logger.info(f"Template baixado: {len(template_bytes)} bytes")
+    
+    # Determinar extensão do arquivo original
+    file_extension = os.path.splitext(template.storage_file_key)[1] or '.docx'
+    
+    # Normalizar documento (.doc -> .docx)
+    try:
+        normalized_bytes, normalized_ext = DocumentConverter.normalize_document(
+            template_bytes,
+            file_extension
+        )
+        logger.info(f"Documento normalizado: {normalized_ext}")
+    except ValueError as e:
+        logger.error(f"Erro ao normalizar documento: {e}")
+        raise ValueError(f"Não foi possível processar o arquivo: {str(e)}")
+    
+    # Validar estrutura do documento antes de processar
+    is_valid, error_message = DocumentConverter.validate_document_structure(normalized_bytes)
+    if not is_valid:
+        logger.error(f"Documento inválido: {error_message}")
+        raise ValueError(f"Documento não é válido: {error_message}")
+    
+    logger.info("Estrutura do documento validada com sucesso")
+    
+    # Processar documento com python-docx
+    doc = Document(BytesIO(normalized_bytes))
+    
+    # Substituir tags em parágrafos
+    for paragraph in doc.paragraphs:
+        text = paragraph.text
+        tags = TagProcessor.extract_tags(text)
+        
+        for tag in tags:
+            field = mappings.get(tag, tag) if mappings else tag
+            value = TagProcessor._get_nested_value(combined_data, field)
+            
+            if value is not None:
+                text = text.replace(f'{{{{{tag}}}}}', str(value))
+            else:
+                text = text.replace(f'{{{{{tag}}}}}', '')
+        
+        paragraph.text = text
+    
+    # Substituir tags em tabelas
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text = cell.text
+                tags = TagProcessor.extract_tags(text)
+                
+                for tag in tags:
+                    field = mappings.get(tag, tag) if mappings else tag
+                    value = TagProcessor._get_nested_value(combined_data, field)
+                    
+                    if value is not None:
+                        text = text.replace(f'{{{{{tag}}}}}', str(value))
+                    else:
+                        text = text.replace(f'{{{{{tag}}}}}', '')
+                
+                cell.text = text
+    
+    # Salvar documento processado em buffer
+    output_buffer = BytesIO()
+    doc.save(output_buffer)
+    output_buffer.seek(0)
+    processed_bytes = output_buffer.read()
+    
+    logger.info(f"Documento processado: {len(processed_bytes)} bytes")
+    
+    # Gerar nome único para arquivo gerado
+    file_uuid = str(uuid.uuid4())
+    file_ext = '.docx'  # Sempre .docx para templates enviados
+    filename = f"{file_uuid}{file_ext}"
+    
+    # Key no DigitalOcean Spaces: docg/{organization_id}/outputs/{filename}
+    organization_id = str(workflow.organization_id)
+    output_key = f"docg/{organization_id}/outputs/{filename}"
+    
+    # Upload do documento gerado
+    mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    output_url = storage_service.upload_file(
+        BytesIO(processed_bytes),
+        output_key,
+        mime_type
+    )
+    
+    logger.info(f"Documento gerado salvo no Spaces: {output_key}")
+    
+    # Gerar PDF se configurado
+    pdf_result = None
+    if config.get('create_pdf', False):
+        try:
+            logger.info("Gerando PDF do documento...")
+            pdf_bytes = DocumentConverter.convert_docx_to_pdf(processed_bytes)
+            
+            # Upload do PDF para DigitalOcean Spaces
+            pdf_uuid = str(uuid.uuid4())
+            pdf_filename = f"{pdf_uuid}.pdf"
+            pdf_key = f"docg/{organization_id}/outputs/{pdf_filename}"
+            
+            pdf_url = storage_service.upload_file(
+                BytesIO(pdf_bytes),
+                pdf_key,
+                'application/pdf'
+            )
+            
+            pdf_result = {
+                'id': pdf_key,
+                'url': pdf_url
+            }
+            
+            logger.info(f"PDF gerado e salvo no Spaces: {pdf_key}")
+            
+        except ValueError as e:
+            logger.warning(f'Não foi possível gerar PDF: {e}')
+            # Não falhar a execução se PDF não puder ser gerado
+            pdf_result = None
+        except Exception as e:
+            logger.error(f'Erro inesperado ao gerar PDF: {e}')
+            pdf_result = None
+    
+    # Criar registro GeneratedDocument
+    generated_doc = GeneratedDocument(
+        organization_id=workflow.organization_id,
+        workflow_id=workflow.id,
+        source_connection_id=workflow.source_connection_id,
+        source_object_type=data['source_object_type'],
+        source_object_id=data['source_object_id'],
+        template_id=template.id,
+        template_version=template.version,
+        name=doc_name,
+        # Usar campos existentes para armazenar URL do DigitalOcean Spaces
+        google_doc_id=output_key,  # Reutilizar campo para key no Spaces
+        google_doc_url=output_url,  # Reutilizar campo para URL do Spaces
+        status='generated',
+        generated_data=data['source_data'],
+        generated_at=datetime.utcnow()
+    )
+    
+    # Adicionar informações do PDF se gerado
+    if pdf_result:
+        generated_doc.pdf_file_id = pdf_result['id']
+        generated_doc.pdf_url = pdf_result['url']
+    
+    db.session.add(generated_doc)
+    db.session.commit()
+    
+    logger.info(f"GeneratedDocument criado: {generated_doc.id}")
+    
+    return {
+        'document_id': str(generated_doc.id),
+        'file_id': output_key,  # Key no Spaces
+        'file_url': output_url,
+        'pdf_file_id': pdf_result['id'] if pdf_result else None,
+        'pdf_url': pdf_result['url'] if pdf_result else None,
+        'reused': False
+    }
 
 
 async def _generate_google_docs(
