@@ -69,3 +69,4 @@ def get_config() -> TemporalConfig:
         _config = TemporalConfig.from_env()
     return _config
 
+

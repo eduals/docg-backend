@@ -80,3 +80,4 @@ def downgrade():
     op.drop_column('workflow_executions', 'temporal_run_id')
     op.drop_column('workflow_executions', 'temporal_workflow_id')
 
+
