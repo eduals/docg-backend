@@ -152,6 +152,10 @@ def create_app(config_class=Config):
     # Rotas de mapeamentos globais
     from app.routes import global_field_mappings
     app.register_blueprint(global_field_mappings.global_field_mappings_bp)
-    
+
+    # SSE (Server-Sent Events) para real-time
+    from app.routes import sse
+    app.register_blueprint(sse.sse_bp)
+
     return app
 

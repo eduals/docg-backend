@@ -64,3 +64,6 @@ class Config:
     DO_SPACES_BUCKET = os.getenv('DO_SPACES_BUCKET', 'pipehub')
     DO_SPACES_ENDPOINT = os.getenv('DO_SPACES_ENDPOINT', 'https://nyc3.digitaloceanspaces.com')
 
+    # Redis (para SSE pub/sub e Celery)
+    REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+

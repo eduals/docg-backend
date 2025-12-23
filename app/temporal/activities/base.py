@@ -9,6 +9,16 @@ from temporalio import activity
 logger = logging.getLogger(__name__)
 
 
+def _publish_sse_event(event_type: str, data: Dict[str, Any], execution_id: str):
+    """Helper para publicar eventos SSE de forma segura."""
+    try:
+        from app.services.sse_publisher import get_sse_publisher
+        publisher = get_sse_publisher()
+        publisher.publish(execution_id, event_type, data)
+    except Exception as e:
+        logger.warning(f"Erro ao publicar SSE: {e}")
+
+
 @activity.defn
 async def load_execution(execution_id: str) -> Dict[str, Any]:
     """
@@ -115,8 +125,15 @@ async def pause_execution(execution_id: str) -> bool:
         
         execution.status = 'paused'
         db.session.commit()
-        
+
         activity.logger.info(f"Execução {execution_id} pausada")
+
+        # Publicar evento SSE
+        _publish_sse_event("execution:paused", {
+            "execution_id": execution_id,
+            "reason": "pending"
+        }, execution_id)
+
         return True
 
 
@@ -168,10 +185,19 @@ async def complete_execution(execution_id: str) -> bool:
             execution.execution_time_ms = int(
                 (execution.completed_at - execution.started_at).total_seconds() * 1000
             )
-        
+
         db.session.commit()
-        
+
         activity.logger.info(f"Execução {execution_id} completada em {execution.execution_time_ms}ms")
+
+        # Publicar evento SSE
+        _publish_sse_event("execution:completed", {
+            "execution_id": execution_id,
+            "status": "completed",
+            "execution_time_ms": execution.execution_time_ms,
+            "generated_document_id": str(execution.generated_document_id) if execution.generated_document_id else None
+        }, execution_id)
+
         return True
 
 
@@ -202,8 +228,16 @@ async def fail_execution(data: Dict[str, Any]) -> bool:
             )
         
         db.session.commit()
-        
+
         activity.logger.error(f"Execução {data['execution_id']} falhou: {execution.error_message}")
+
+        # Publicar evento SSE
+        _publish_sse_event("execution:failed", {
+            "execution_id": data['execution_id'],
+            "status": "failed",
+            "error_message": execution.error_message
+        }, data['execution_id'])
+
         return True
 
 
@@ -253,7 +287,29 @@ async def add_execution_log(data: Dict[str, Any]) -> bool:
         )
         
         db.session.commit()
-        
+
         activity.logger.info(f"Log adicionado para node {data['node_id']}: {data['status']}")
+
+        # Publicar evento SSE
+        status = data['status']
+        if status == 'success':
+            event_type = 'step:completed'
+        elif status == 'error':
+            event_type = 'step:failed'
+        elif status == 'running':
+            event_type = 'step:started'
+        else:
+            event_type = f'step:{status}'
+
+        _publish_sse_event(event_type, {
+            "node_id": data['node_id'],
+            "node_type": data['node_type'],
+            "status": status,
+            "started_at": data.get('started_at').isoformat() if data.get('started_at') else None,
+            "completed_at": data.get('completed_at').isoformat() if data.get('completed_at') else None,
+            "output": data.get('output'),
+            "error": data.get('error')
+        }, data['execution_id'])
+
         return True
 

@@ -1,0 +1,117 @@
+# Docker Compose para Workers Temporal Dedicados
+# Uso: docker-compose -f docker-compose.workers.yml up
+
+version: '3.8'
+
+services:
+  # Worker principal - processa workflows e triggers
+  docg-workflow-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.temporal.workers.workflow_worker
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_WORKFLOW_QUEUE=docg-workflows
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+    restart: unless-stopped
+    networks:
+      - docg-network
+
+  # Worker para emails
+  docg-email-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.temporal.workers.email_worker
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_EMAIL_QUEUE=docg-emails
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+    restart: unless-stopped
+    networks:
+      - docg-network
+
+  # Worker para documentos
+  docg-document-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.temporal.workers.document_worker
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_DOCUMENT_QUEUE=docg-documents
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+    restart: unless-stopped
+    networks:
+      - docg-network
+
+  # Worker para assinaturas
+  docg-signature-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.temporal.workers.signature_worker
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_SIGNATURE_QUEUE=docg-signatures
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+    restart: unless-stopped
+    networks:
+      - docg-network
+
+  # Worker para webhooks
+  docg-webhook-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.temporal.workers.webhook_worker
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_WEBHOOK_QUEUE=docg-webhooks
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+    restart: unless-stopped
+    networks:
+      - docg-network
+
+  # Worker para aprovações
+  docg-approval-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.temporal.workers.approval_worker
+    environment:
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-temporal:7233}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_APPROVAL_QUEUE=docg-approvals
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+    restart: unless-stopped
+    networks:
+      - docg-network
+
+networks:
+  docg-network:
+    external: true

@@ -116,58 +116,113 @@ class DocGWorkflow:
             
             workflow.logger.info(f"Carregados {len(nodes)} nodes para workflow {workflow_id}")
             
-            # 2. Processar cada node sequencialmente
-            for node in nodes:
-                node_id = node['id']
-                node_type = node['node_type']
-                node_position = node['position']
-                
+            # 2. Processar nodes com suporte a branching
+            # Separar trigger node dos action nodes
+            trigger_node = nodes[0] if nodes and nodes[0].get('position') == 1 else None
+            action_nodes = [n for n in nodes if n.get('position', 0) > 1]
+
+            # Processar trigger primeiro
+            if trigger_node:
+                node_id = trigger_node['id']
+                node_type = trigger_node['node_type']
+
+                workflow.logger.info(f"Executando trigger: {node_type} ({node_id})")
+
+                await workflow.execute_activity(
+                    update_current_node,
+                    {'execution_id': execution_id, 'node_id': node_id},
+                    start_to_close_timeout=timedelta(seconds=10)
+                )
+
+                started_at = workflow.now()
+
+                try:
+                    await self._execute_trigger(
+                        execution_id, trigger_node, workflow_id, organization_id, trigger_data, config
+                    )
+
+                    await workflow.execute_activity(
+                        add_execution_log,
+                        {
+                            'execution_id': execution_id,
+                            'node_id': node_id,
+                            'node_type': node_type,
+                            'status': 'success',
+                            'started_at': started_at.isoformat(),
+                            'completed_at': workflow.now().isoformat()
+                        },
+                        start_to_close_timeout=timedelta(seconds=10)
+                    )
+                except Exception as e:
+                    await workflow.execute_activity(
+                        add_execution_log,
+                        {
+                            'execution_id': execution_id,
+                            'node_id': node_id,
+                            'node_type': node_type,
+                            'status': 'failed',
+                            'started_at': started_at.isoformat(),
+                            'completed_at': workflow.now().isoformat(),
+                            'error': str(e)
+                        },
+                        start_to_close_timeout=timedelta(seconds=10)
+                    )
+                    raise
+
+            # Processar action nodes com branching
+            # Criar índice de nodes por ID para acesso rápido
+            nodes_by_id = {n['id']: n for n in action_nodes}
+            executed_steps = {}  # step_id -> output
+
+            # Começar do primeiro action node
+            current_node = action_nodes[0] if action_nodes else None
+
+            while current_node:
+                node_id = current_node['id']
+                node_type = current_node['node_type']
+                node_position = current_node['position']
+
                 workflow.logger.info(f"Executando node {node_position}: {node_type} ({node_id})")
-                
+
                 # Atualizar current_node
                 await workflow.execute_activity(
                     update_current_node,
                     {'execution_id': execution_id, 'node_id': node_id},
                     start_to_close_timeout=timedelta(seconds=10)
                 )
-                
+
                 started_at = workflow.now()
-                
+
                 try:
                     # Executar baseado no tipo
-                    if node_type in ['hubspot', 'webhook', 'google-forms', 'trigger']:
-                        await self._execute_trigger(
-                            execution_id, node, workflow_id, organization_id, trigger_data, config
-                        )
-                    
-                    elif node_type in ['google-docs', 'google-slides', 'microsoft-word', 'microsoft-powerpoint', 'uploaded-document', 'file-upload']:
+                    if node_type in ['google-docs', 'google-slides', 'microsoft-word', 'microsoft-powerpoint', 'uploaded-document', 'file-upload']:
                         await self._execute_document(
-                            execution_id, node, workflow_id, organization_id, config
+                            execution_id, current_node, workflow_id, organization_id, config
                         )
-                    
+
                     elif node_type in ['review-documents', 'human-in-loop']:
                         await self._execute_approval(
-                            execution_id, node, workflow_id, organization_id, config
+                            execution_id, current_node, workflow_id, organization_id, config
                         )
-                    
+
                     elif node_type in ['request-signatures', 'signature', 'clicksign']:
                         await self._execute_signature(
-                            execution_id, node, workflow_id, organization_id, config
+                            execution_id, current_node, workflow_id, organization_id, config
                         )
-                    
+
                     elif node_type in ['gmail', 'outlook']:
                         await self._execute_email(
-                            execution_id, node, workflow_id, organization_id, config
+                            execution_id, current_node, workflow_id, organization_id, config
                         )
-                    
+
                     elif node_type == 'webhook':
                         await self._execute_webhook(
-                            execution_id, node, workflow_id, organization_id, config
+                            execution_id, current_node, workflow_id, organization_id, config
                         )
-                    
+
                     else:
                         workflow.logger.warning(f"Tipo de node não suportado: {node_type}")
-                    
+
                     # Log de sucesso
                     await workflow.execute_activity(
                         add_execution_log,
@@ -181,7 +236,14 @@ class DocGWorkflow:
                         },
                         start_to_close_timeout=timedelta(seconds=10)
                     )
-                
+
+                    # Armazenar output para branching
+                    executed_steps[node_id] = {
+                        'node_type': node_type,
+                        'position': node_position,
+                        'status': 'success'
+                    }
+
                 except Exception as e:
                     # Log de erro
                     await workflow.execute_activity(
@@ -198,6 +260,14 @@ class DocGWorkflow:
                         start_to_close_timeout=timedelta(seconds=10)
                     )
                     raise
+
+                # Determinar próximo node (branching ou sequencial)
+                current_node = self._get_next_node(
+                    current_node=current_node,
+                    action_nodes=action_nodes,
+                    nodes_by_id=nodes_by_id,
+                    executed_steps=executed_steps
+                )
             
             # 3. Completar execução
             await workflow.execute_activity(
@@ -491,10 +561,161 @@ class DocGWorkflow:
             'generated_documents': self._generated_documents,
             'signature_requests': self._signature_requests
         }
-        
+
         await workflow.execute_activity(
             save_execution_context,
             {'execution_id': execution_id, 'context': context},
             start_to_close_timeout=timedelta(seconds=10)
         )
+
+    def _get_next_node(
+        self,
+        current_node: Dict[str, Any],
+        action_nodes: List[Dict[str, Any]],
+        nodes_by_id: Dict[str, Dict[str, Any]],
+        executed_steps: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Determina o próximo node considerando branching.
+
+        Args:
+            current_node: Node atual
+            action_nodes: Lista de todos action nodes
+            nodes_by_id: Índice de nodes por ID
+            executed_steps: Steps já executados
+
+        Returns:
+            Próximo node ou None se terminou
+        """
+        structural_type = current_node.get('structural_type', 'single')
+
+        # Se é um branch node, avaliar condições
+        if structural_type == 'branch':
+            branch_conditions = current_node.get('branch_conditions', [])
+
+            for branch in branch_conditions:
+                conditions = branch.get('conditions')
+                next_node_id = branch.get('next_node_id')
+
+                # Default path (conditions == None)
+                if conditions is None:
+                    if next_node_id and next_node_id in nodes_by_id:
+                        return nodes_by_id[next_node_id]
+                    continue
+
+                # Avaliar condições
+                if self._evaluate_branch_conditions(conditions, executed_steps):
+                    if next_node_id and next_node_id in nodes_by_id:
+                        return nodes_by_id[next_node_id]
+
+        # Fallback: próximo sequencial por position
+        current_position = current_node.get('position', 0)
+        for node in action_nodes:
+            if node.get('position') == current_position + 1:
+                return node
+
+        return None
+
+    def _evaluate_branch_conditions(
+        self,
+        conditions: Dict[str, Any],
+        executed_steps: Dict[str, Any]
+    ) -> bool:
+        """
+        Avalia condições de branching.
+
+        Args:
+            conditions: Estrutura de condições
+            executed_steps: Steps executados com seus outputs
+
+        Returns:
+            True se condições são satisfeitas
+        """
+        rules = conditions.get('rules', [])
+        condition_type = conditions.get('type', 'and')
+
+        if not rules:
+            return True
+
+        results = []
+        for rule in rules:
+            field = rule.get('field', '')
+            operator = rule.get('operator', '==')
+            expected = rule.get('value')
+
+            # Extrair valor do campo
+            actual = self._get_field_value(field, executed_steps)
+
+            # Comparar
+            result = self._compare_values(actual, operator, expected)
+            results.append(result)
+
+        if condition_type == 'and':
+            return all(results)
+        return any(results)
+
+    def _get_field_value(self, field: str, executed_steps: Dict[str, Any]) -> Any:
+        """Extrai valor de um campo do contexto"""
+        # Se tem referência {{step.xxx.yyy}}
+        if '{{' in field and '}}' in field:
+            # Extrair path
+            match = field.replace('{{', '').replace('}}', '').strip()
+            parts = match.split('.')
+
+            if parts[0] == 'step' and len(parts) >= 3:
+                step_id = parts[1]
+                if step_id in executed_steps:
+                    return self._get_nested(executed_steps[step_id], parts[2:])
+            elif parts[0] == 'trigger':
+                return self._get_nested(self._source_data, parts[1:])
+
+        return field
+
+    def _get_nested(self, obj: Any, keys: List[str]) -> Any:
+        """Obtém valor aninhado de um objeto"""
+        for key in keys:
+            if isinstance(obj, dict):
+                obj = obj.get(key)
+            elif isinstance(obj, list):
+                try:
+                    obj = obj[int(key)]
+                except (ValueError, IndexError):
+                    return None
+            else:
+                return None
+            if obj is None:
+                return None
+        return obj
+
+    def _compare_values(self, actual: Any, operator: str, expected: Any) -> bool:
+        """Compara valores com operador"""
+        try:
+            if operator == '==':
+                return str(actual) == str(expected)
+            elif operator == '!=':
+                return str(actual) != str(expected)
+            elif operator == '>':
+                return float(actual) > float(expected)
+            elif operator == '<':
+                return float(actual) < float(expected)
+            elif operator == '>=':
+                return float(actual) >= float(expected)
+            elif operator == '<=':
+                return float(actual) <= float(expected)
+            elif operator == 'contains':
+                return str(expected) in str(actual)
+            elif operator == 'not_contains':
+                return str(expected) not in str(actual)
+            elif operator == 'starts_with':
+                return str(actual).startswith(str(expected))
+            elif operator == 'ends_with':
+                return str(actual).endswith(str(expected))
+            elif operator == 'is_empty':
+                return not actual or actual == '' or actual == []
+            elif operator == 'is_not_empty':
+                return bool(actual) and actual != '' and actual != []
+            else:
+                return False
+        except (ValueError, TypeError):
+            return False
 

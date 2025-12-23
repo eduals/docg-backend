@@ -3,6 +3,18 @@ from datetime import datetime
 from app.database import db
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
+
+class ConcurrentExecutionError(Exception):
+    """Raised when trying to start a workflow that is already running"""
+    def __init__(self, workflow_id: str, execution_id: str = None):
+        self.workflow_id = workflow_id
+        self.execution_id = execution_id
+        message = f"Workflow {workflow_id} is already running"
+        if execution_id:
+            message += f" (execution: {execution_id})"
+        super().__init__(message)
+
+
 class WorkflowExecution(db.Model):
     __tablename__ = 'workflow_executions'
     
@@ -54,12 +66,53 @@ class WorkflowExecution(db.Model):
     #     ]
     # }
     ai_metrics = db.Column(JSONB)
-    
+
+    # Optimistic locking version
+    version = db.Column(db.Integer, default=1, nullable=False)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     generated_document = db.relationship('GeneratedDocument', foreign_keys=[generated_document_id])
     current_node = db.relationship('WorkflowNode', foreign_keys=[current_node_id])
+
+    @classmethod
+    def check_concurrent_execution(cls, workflow_id: str) -> None:
+        """
+        Verifica se há uma execução em andamento para o workflow.
+
+        Args:
+            workflow_id: ID do workflow
+
+        Raises:
+            ConcurrentExecutionError: Se já existe uma execução running
+        """
+        running = cls.query.filter_by(
+            workflow_id=workflow_id,
+            status='running'
+        ).first()
+
+        if running:
+            raise ConcurrentExecutionError(
+                workflow_id=str(workflow_id),
+                execution_id=str(running.id)
+            )
+
+    @classmethod
+    def get_running_execution(cls, workflow_id: str):
+        """
+        Retorna a execução em andamento para o workflow, se existir.
+
+        Args:
+            workflow_id: ID do workflow
+
+        Returns:
+            WorkflowExecution ou None
+        """
+        return cls.query.filter_by(
+            workflow_id=workflow_id,
+            status='running'
+        ).first()
     
     def to_dict(self, include_logs=False):
         result = {

@@ -8,6 +8,8 @@ Cada activity representa uma operação específica:
 - approval: Criação e gerenciamento de aprovações
 - signature: Envio para assinatura e rastreamento
 - email: Envio de emails (Gmail, Outlook)
+- webhook: Envio de webhooks de saída
+- engine_bridge: Ponte para integração com a nova Engine
 """
 
 from .base import (
@@ -26,6 +28,20 @@ from .approval import create_approval, expire_approval
 from .signature import create_signature_request, expire_signature
 from .email import execute_email_node
 from .webhook import execute_webhook_node
+
+# Engine Bridge - funções auxiliares para usar a nova Engine
+from .engine_bridge import (
+    create_execution_step,
+    start_execution_step,
+    complete_execution_step,
+    fail_execution_step,
+    get_previous_steps_output,
+    apply_compute_parameters,
+    get_app_for_node,
+    execute_via_app,
+    build_global_variable_context,
+    with_execution_step,
+)
 
 # Lista de todas as activities para registrar no Worker
 ALL_ACTIVITIES = [
@@ -55,6 +71,7 @@ ALL_ACTIVITIES = [
 ]
 
 __all__ = [
+    # Activities
     'load_execution',
     'update_current_node',
     'save_execution_context',
@@ -72,5 +89,16 @@ __all__ = [
     'execute_email_node',
     'execute_webhook_node',
     'ALL_ACTIVITIES',
+    # Engine Bridge
+    'create_execution_step',
+    'start_execution_step',
+    'complete_execution_step',
+    'fail_execution_step',
+    'get_previous_steps_output',
+    'apply_compute_parameters',
+    'get_app_for_node',
+    'execute_via_app',
+    'build_global_variable_context',
+    'with_execution_step',
 ]
 

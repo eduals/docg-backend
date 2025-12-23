@@ -210,7 +210,30 @@ class WorkflowNode(db.Model):
     # Posição e ordem
     position = db.Column(db.Integer, nullable=False)  # Ordem no workflow (1 = primeiro)
     parent_node_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflow_nodes.id', ondelete='SET NULL'))
-    
+
+    # Branching (estilo Automatisch)
+    structural_type = db.Column(db.String(20), default='single')  # 'single', 'branch', 'paths'
+    branch_conditions = db.Column(JSONB)
+    # Estrutura de branch_conditions:
+    # [
+    #   {
+    #     "name": "High Value Deal",
+    #     "conditions": {
+    #       "type": "and",  # 'and' ou 'or'
+    #       "rules": [
+    #         {"field": "{{step.trigger.deal.amount}}", "operator": ">", "value": 10000}
+    #       ]
+    #     },
+    #     "next_node_id": "uuid"
+    #   },
+    #   {
+    #     "name": "Default",
+    #     "conditions": null,  # null = default path (sempre executado se nenhum outro match)
+    #     "next_node_id": "uuid"
+    #   }
+    # ]
+    # Operadores suportados: ==, !=, >, <, >=, <=, contains, not_contains, starts_with, ends_with, is_empty, is_not_empty
+
     # Configuração específica do node (JSONB)
     config = db.Column(JSONB)
     # Para trigger: { trigger_type, source_connection_id, source_object_type, trigger_config }
@@ -247,15 +270,113 @@ class WorkflowNode(db.Model):
             'node_type': self.node_type,
             'position': self.position,
             'parent_node_id': str(self.parent_node_id) if self.parent_node_id else None,
+            'structural_type': self.structural_type or 'single',
+            'branch_conditions': self.branch_conditions,
             'status': self.status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
-        
+
         if include_config:
             result['config'] = self.config or {}
-        
+
         return result
+
+    def is_branch(self):
+        """Verifica se é um node de branching"""
+        return self.structural_type == 'branch'
+
+    def get_next_node_id(self, context: dict = None, previous_steps: list = None):
+        """
+        Determina o próximo node baseado nas condições de branching.
+
+        Args:
+            context: Contexto da execução
+            previous_steps: Steps anteriores para resolução de variáveis
+
+        Returns:
+            ID do próximo node ou None
+        """
+        if self.structural_type != 'branch' or not self.branch_conditions:
+            return None
+
+        from app.engine.compute_parameters import compute_parameters
+
+        for branch in self.branch_conditions:
+            conditions = branch.get('conditions')
+
+            # Default path (conditions == null)
+            if conditions is None:
+                return branch.get('next_node_id')
+
+            # Evaluate conditions
+            if self._evaluate_conditions(conditions, context, previous_steps):
+                return branch.get('next_node_id')
+
+        return None
+
+    def _evaluate_conditions(self, conditions: dict, context: dict, previous_steps: list) -> bool:
+        """Avalia um grupo de condições"""
+        from app.engine.compute_parameters import compute_parameters
+
+        rules = conditions.get('rules', [])
+        condition_type = conditions.get('type', 'and')
+
+        if not rules:
+            return True
+
+        results = []
+        for rule in rules:
+            field = rule.get('field', '')
+            operator = rule.get('operator', '==')
+            expected_value = rule.get('value')
+
+            # Resolver variáveis no field
+            if '{{' in field:
+                actual_value = compute_parameters(
+                    field, None, context, previous_steps
+                )
+            else:
+                actual_value = field
+
+            result = self._compare(actual_value, operator, expected_value)
+            results.append(result)
+
+        if condition_type == 'and':
+            return all(results)
+        return any(results)
+
+    def _compare(self, actual, operator: str, expected) -> bool:
+        """Compara valores com operador"""
+        try:
+            if operator == '==':
+                return str(actual) == str(expected)
+            elif operator == '!=':
+                return str(actual) != str(expected)
+            elif operator == '>':
+                return float(actual) > float(expected)
+            elif operator == '<':
+                return float(actual) < float(expected)
+            elif operator == '>=':
+                return float(actual) >= float(expected)
+            elif operator == '<=':
+                return float(actual) <= float(expected)
+            elif operator == 'contains':
+                return str(expected) in str(actual)
+            elif operator == 'not_contains':
+                return str(expected) not in str(actual)
+            elif operator == 'starts_with':
+                return str(actual).startswith(str(expected))
+            elif operator == 'ends_with':
+                return str(actual).endswith(str(expected))
+            elif operator == 'is_empty':
+                return not actual or actual == '' or actual == []
+            elif operator == 'is_not_empty':
+                return bool(actual) and actual != '' and actual != []
+            else:
+                return False
+        except (ValueError, TypeError):
+            return False
     
     def is_trigger(self):
         """Verifica se é um node trigger (sempre position 1)"""

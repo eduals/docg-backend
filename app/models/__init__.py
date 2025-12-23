@@ -7,8 +7,10 @@ from .approval import WorkflowApproval
 from .hubspot_property_cache import HubSpotPropertyCache
 from .document import GeneratedDocument
 from .signature import SignatureRequest
-from .execution import WorkflowExecution
+from .execution import WorkflowExecution, ConcurrentExecutionError
+from .execution_step import ExecutionStep
 from .pkce import PKCEVerifier
+from .datastore import WorkflowDatastore
 from .user_settings import (
     UserPreference,
     UserNotificationPreference,
@@ -80,7 +82,10 @@ __all__ = [
     'GeneratedDocument',
     'SignatureRequest',
     'WorkflowExecution',
+    'ConcurrentExecutionError',
+    'ExecutionStep',
     'PKCEVerifier',
+    'WorkflowDatastore',
     # User settings models
     'UserPreference',
     'UserNotificationPreference',
