@@ -55,7 +55,13 @@ class DocGWorkflow:
         # Estado de signals
         self._approval_decision: Optional[Dict[str, Any]] = None
         self._signature_status: Optional[Dict[str, Any]] = None
-        
+
+        # Novos signals (F10: Pause/Resume)
+        self._resume_requested: bool = False
+        self._resume_data: Optional[Dict[str, Any]] = None
+        self._cancel_requested: bool = False
+        self._cancel_reason: Optional[str] = None
+
         # Context acumulado
         self._source_data: Dict[str, Any] = {}
         self._source_object_id: str = ""
@@ -78,12 +84,41 @@ class DocGWorkflow:
     async def signature_update_signal(self, data: Dict[str, Any]):
         """
         Recebe signal de update de assinatura.
-        
+
         Args:
             data: {signature_request_id, status: 'signed'|'declined'|...}
         """
         workflow.logger.info(f"Signal recebido: signature_update = {data}")
         self._signature_status = data
+
+    @workflow.signal(name='resume_after_review')
+    async def resume_after_review_signal(self, data: Dict[str, Any]):
+        """
+        Recebe signal para retomar execução após needs_review (preflight fix).
+
+        Feature 10: Pause/Resume via Signals
+
+        Args:
+            data: Dados adicionais para retomada (opcional)
+        """
+        workflow.logger.info(f"Signal recebido: resume_after_review = {data}")
+        self._resume_requested = True
+        self._resume_data = data
+
+    @workflow.signal(name='cancel')
+    async def cancel_signal(self, data: Dict[str, Any]):
+        """
+        Recebe signal para cancelar execução.
+
+        Feature 10: Pause/Resume via Signals
+
+        Args:
+            data: {reason: str}
+        """
+        reason = data.get('reason', 'User requested')
+        workflow.logger.info(f"Signal recebido: cancel - reason={reason}")
+        self._cancel_requested = True
+        self._cancel_reason = reason
     
     @workflow.run
     async def run(self, execution_id: str) -> Dict[str, Any]:

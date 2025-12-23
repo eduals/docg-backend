@@ -42,7 +42,15 @@ def create_app(config_class=Config):
     
     from app.routes import workflows
     app.register_blueprint(workflows.workflows_bp)
-    
+
+    # Novos endpoints de executions (Features 2, 5, 6, 7, 10, 12)
+    from app.controllers.api.v1.executions import bp as executions_bp
+    app.register_blueprint(executions_bp)
+
+    # Preflight endpoint (Feature 2)
+    from app.controllers.api.v1.executions.preflight import preflight_bp
+    app.register_blueprint(preflight_bp)
+
     from app.routes import templates
     app.register_blueprint(templates.templates_bp)
     

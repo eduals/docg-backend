@@ -67,7 +67,11 @@ class ExecutionStep(db.Model):
     status = db.Column(db.String(50), default='pending')
 
     # Detalhes do erro (se status = 'failure')
-    error_details = db.Column(db.Text)
+    error_details = db.Column(db.Text)  # DEPRECATED: usar error_human
+
+    # === Erros separados (F7) ===
+    error_human = db.Column(db.Text, nullable=True)  # Mensagem para usuário
+    error_tech = db.Column(db.Text, nullable=True)   # Stack trace/detalhes técnicos
 
     # Código do erro para categorização
     error_code = db.Column(db.String(100))
@@ -119,7 +123,9 @@ class ExecutionStep(db.Model):
             'app_key': self.app_key,
             'action_key': self.action_key,
             'status': self.status,
-            'error_details': self.error_details,
+            'error_details': self.error_details,  # DEPRECATED
+            'error_human': self.error_human,      # F7
+            'error_tech': self.error_tech,        # F7
             'error_code': self.error_code,
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
@@ -149,11 +155,26 @@ class ExecutionStep(db.Model):
             self.step_metadata = step_metadata
         self._calculate_duration()
 
-    def fail(self, error_details: str, error_code: str = None):
-        """Marca o step como falho"""
+    def fail(self, error_details: str, error_code: str = None, error_human: str = None, error_tech: str = None):
+        """
+        Marca o step como falho.
+
+        Args:
+            error_details: Mensagem de erro (DEPRECATED, usar error_human/error_tech)
+            error_code: Código do erro
+            error_human: Mensagem para usuário
+            error_tech: Detalhes técnicos/stack trace
+        """
         self.status = 'failure'
         self.completed_at = datetime.utcnow()
+
+        # Backward compatibility
         self.error_details = error_details
+
+        # Novos campos (F7)
+        self.error_human = error_human or error_details
+        self.error_tech = error_tech
+
         self.error_code = error_code
         self._calculate_duration()
 
