@@ -57,16 +57,25 @@ class HubSpotApp(BaseApp):
             oauth2_auth_url='https://app.hubspot.com/oauth/authorize',
             oauth2_token_url='https://api.hubapi.com/oauth/v1/token',
             oauth2_scopes=[
+                # Contacts
                 'crm.objects.contacts.read',
                 'crm.objects.contacts.write',
+                # Deals
                 'crm.objects.deals.read',
                 'crm.objects.deals.write',
+                # Companies
                 'crm.objects.companies.read',
                 'crm.objects.companies.write',
+                # Schemas
                 'crm.schemas.contacts.read',
                 'crm.schemas.deals.read',
                 'crm.schemas.companies.read',
+                # Files
                 'files',
+                # Tickets - NOTA: usar 'tickets' (NÃO 'crm.objects.tickets')
+                'tickets',
+                # Line Items / Products - NOTA: usar 'e-commerce' (NÃO 'crm.objects.line_items')
+                'e-commerce',
             ],
         )
 
@@ -74,6 +83,8 @@ class HubSpotApp(BaseApp):
         """Registra actions, triggers e dynamic data"""
         # Import local para evitar circular imports
         from .actions import get_object, create_contact, update_contact, create_deal, update_deal, attach_file
+        from .actions import create_ticket, update_ticket, get_ticket
+        from .actions import get_line_items, create_line_item
         from .triggers import new_deal, new_contact, updated_deal
         from .dynamic_data import list_properties, list_objects
 
@@ -145,6 +156,100 @@ class HubSpotApp(BaseApp):
             name='Attach File',
             description='Attaches a file to a HubSpot object',
             handler=attach_file.run,
+        ))
+
+        # Ticket actions
+        self.register_action(ActionDefinition(
+            key='create-ticket',
+            name='Create Ticket',
+            description='Creates a new support ticket in HubSpot',
+            handler=create_ticket.run,
+            input_schema={
+                'type': 'object',
+                'properties': {
+                    'subject': {'type': 'string', 'description': 'Ticket subject/title'},
+                    'content': {'type': 'string', 'description': 'Ticket description'},
+                    'priority': {'type': 'string', 'enum': ['LOW', 'MEDIUM', 'HIGH']},
+                    'pipeline': {'type': 'string', 'description': 'Pipeline ID'},
+                    'pipeline_stage': {'type': 'string', 'description': 'Pipeline stage ID'},
+                    'properties': {'type': 'object', 'description': 'Additional properties'},
+                },
+                'required': ['subject'],
+            },
+        ))
+
+        self.register_action(ActionDefinition(
+            key='update-ticket',
+            name='Update Ticket',
+            description='Updates an existing ticket in HubSpot',
+            handler=update_ticket.run,
+            input_schema={
+                'type': 'object',
+                'properties': {
+                    'ticket_id': {'type': 'string'},
+                    'subject': {'type': 'string'},
+                    'content': {'type': 'string'},
+                    'priority': {'type': 'string', 'enum': ['LOW', 'MEDIUM', 'HIGH']},
+                    'status': {'type': 'string'},
+                    'pipeline_stage': {'type': 'string'},
+                    'properties': {'type': 'object'},
+                },
+                'required': ['ticket_id'],
+            },
+        ))
+
+        self.register_action(ActionDefinition(
+            key='get-ticket',
+            name='Get Ticket',
+            description='Fetches ticket data from HubSpot',
+            handler=get_ticket.run,
+            input_schema={
+                'type': 'object',
+                'properties': {
+                    'ticket_id': {'type': 'string'},
+                    'properties': {'type': 'array', 'items': {'type': 'string'}},
+                    'include_associations': {'type': 'boolean'},
+                },
+                'required': ['ticket_id'],
+            },
+        ))
+
+        # Line Items actions
+        self.register_action(ActionDefinition(
+            key='get-line-items',
+            name='Get Line Items',
+            description='Fetches line items associated with a deal',
+            handler=get_line_items.run,
+            input_schema={
+                'type': 'object',
+                'properties': {
+                    'deal_id': {'type': 'string'},
+                    'properties': {'type': 'array', 'items': {'type': 'string'}},
+                },
+                'required': ['deal_id'],
+            },
+        ))
+
+        self.register_action(ActionDefinition(
+            key='create-line-item',
+            name='Create Line Item',
+            description='Creates a line item and optionally associates it with a deal',
+            handler=create_line_item.run,
+            input_schema={
+                'type': 'object',
+                'properties': {
+                    'deal_id': {'type': 'string', 'description': 'Deal ID to associate (optional)'},
+                    'name': {'type': 'string'},
+                    'price': {'type': 'number'},
+                    'quantity': {'type': 'number'},
+                    'discount': {'type': 'number'},
+                    'sku': {'type': 'string'},
+                    'description': {'type': 'string'},
+                    'product_id': {'type': 'string'},
+                    'properties': {'type': 'object'},
+                },
+                'required': ['name', 'price'],
+            },
         ))
 
         # Registrar triggers

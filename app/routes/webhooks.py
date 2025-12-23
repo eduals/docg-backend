@@ -647,17 +647,67 @@ def handle_signature_webhook(provider):
         signer_email = event.get('signer_email')
         if signer_email:
             signature_request.update_signer_status(signer_email, event['status'].value)
-        
+
         signature_request.webhook_data = payload
         db.session.commit()
-        
+
         logger.info(f"Webhook processado: {provider} - {event['event_type']} - {envelope_id}")
-        
+
+        # === SSE: Emitir eventos granulares ===
+        if signature_request.execution_id:
+            from app.services.sse_publisher import publish_sse_event
+            from datetime import datetime
+
+            # Mapear event_type para evento SSE
+            event_type_map = {
+                'sign': 'signature.signer.signed',
+                'view': 'signature.signer.viewed',
+                'refuse': 'signature.signer.declined',
+                'deadline': 'signature.expired',
+                'cancel': 'signature.canceled',
+            }
+
+            sse_event_type = event_type_map.get(event.get('event_type'), f'signature.{event.get("event_type")}')
+
+            # Emitir evento do signatário
+            if signer_email:
+                try:
+                    publish_sse_event(
+                        execution_id=str(signature_request.execution_id),
+                        event_type=sse_event_type,
+                        data={
+                            'signature_request_id': str(signature_request.id),
+                            'signer_email': signer_email,
+                            'status': event['status'].value,
+                            'timestamp': event.get('timestamp', datetime.utcnow().isoformat()),
+                            'provider': provider,
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao emitir evento SSE: {e}")
+
         # === TEMPORAL: Enviar signal se todos assinaram ===
         if signature_request.all_signed() and signature_request.workflow_execution_id:
+            # Emitir evento de conclusão (SSE)
+            if signature_request.execution_id:
+                try:
+                    from app.services.sse_publisher import publish_sse_event
+                    publish_sse_event(
+                        execution_id=str(signature_request.execution_id),
+                        event_type='signature.completed',
+                        data={
+                            'signature_request_id': str(signature_request.id),
+                            'all_signers': list(signature_request.signers_status.keys()) if signature_request.signers_status else [],
+                            'completed_at': signature_request.completed_at.isoformat() if signature_request.completed_at else datetime.utcnow().isoformat(),
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao emitir evento SSE de conclusão: {e}")
+
+            # Enviar signal Temporal
             try:
                 from app.temporal.service import send_signature_update, is_temporal_enabled
-                
+
                 if is_temporal_enabled():
                     send_signature_update(
                         workflow_execution_id=str(signature_request.workflow_execution_id),

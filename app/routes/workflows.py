@@ -1520,6 +1520,68 @@ def get_workflow_run(workflow_id, run_id):
     # Incluir logs se solicitado
     if include_logs:
         run_dict['execution_logs'] = execution.execution_logs or []
-    
+
     return jsonify(run_dict)
+
+
+# ==================== TAGS PREVIEW ENDPOINTS ====================
+
+@workflows_bp.route('/<workflow_id>/tags/preview', methods=['POST'])
+@flexible_hubspot_auth
+@require_auth
+@require_org
+def preview_workflow_tags(workflow_id):
+    """
+    Preview de resolução de tags antes de gerar documento.
+
+    POST /api/v1/workflows/{workflow_id}/tags/preview
+
+    Body:
+    {
+        "object_type": "deal",
+        "object_id": "123456",
+        "template_content": "...",  # Opcional
+        "template_id": "uuid"       # Opcional
+    }
+
+    Response:
+    {
+        "tags": [...],
+        "loops": [...],
+        "conditionals": [...],
+        "warnings": [...],
+        "errors": [...],
+        "sample_output": "...",
+        "stats": {...}
+    }
+    """
+    from app.controllers.api.v1.workflows.tags_preview import preview_tags
+    return preview_tags(workflow_id)
+
+
+@workflows_bp.route('/<workflow_id>/tags/validate', methods=['POST'])
+@flexible_hubspot_auth
+@require_auth
+@require_org
+def validate_workflow_tags(workflow_id):
+    """
+    Valida sintaxe de tags sem resolver.
+
+    POST /api/v1/workflows/{workflow_id}/tags/validate
+
+    Body:
+    {
+        "template_content": "..."
+    }
+
+    Response:
+    {
+        "valid": true,
+        "errors": [],
+        "tags": ["{{trigger.deal.name}}", ...],
+        "tag_count": 5
+    }
+    """
+    from app.controllers.api.v1.workflows.tags_preview import validate_template_tags
+    return validate_template_tags(workflow_id)
 

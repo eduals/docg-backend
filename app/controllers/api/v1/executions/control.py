@@ -96,7 +96,9 @@ def retry_execution(execution_id):
 
     Body (opcional):
         {
-            "trigger_data": {...}  // Sobrescrever dados do trigger
+            "trigger_data": {...},  // Sobrescrever dados do trigger
+            "dry_run": false,        // Modo dry-run (pula delivery/signature)
+            "until_phase": "render"  // Para após fase específica (preflight, trigger, render, save, delivery, signature)
         }
 
     Returns:
@@ -108,7 +110,10 @@ def retry_execution(execution_id):
     from app.engine.engine import Engine
     from app.database import db
 
-    trigger_data = request.json.get('trigger_data') if request.json else original_execution.trigger_data
+    request_data = request.json or {}
+    trigger_data = request_data.get('trigger_data', original_execution.trigger_data)
+    dry_run = request_data.get('dry_run', False)
+    until_phase = request_data.get('until_phase')
 
     new_execution = WorkflowExecution(
         workflow_id=original_execution.workflow_id,
@@ -125,7 +130,9 @@ def retry_execution(execution_id):
         asyncio.run(Engine.run(
             workflow_id=str(original_execution.workflow_id),
             trigger_data=trigger_data,
-            execution_id=str(new_execution.id)
+            execution_id=str(new_execution.id),
+            dry_run=dry_run,
+            until_phase=until_phase,
         ))
     except Exception as e:
         return jsonify({'error': f'Failed to start execution: {str(e)}'}), 500

@@ -5,7 +5,7 @@ Similar ao computeParameters do Automatisch, este módulo substitui
 variáveis no formato {{step.{stepId}.{keyPath}}} usando dados de
 ExecutionSteps anteriores.
 
-Formatos suportados:
+Formatos suportados (modo básico):
 - {{step.{stepId}.{keyPath}}} - Valor de um step anterior
 - {{trigger.{keyPath}}} - Valor do trigger output
 - {{flow.{keyPath}}} - Valor do flow context
@@ -13,6 +13,13 @@ Formatos suportados:
 - {{env.{VAR_NAME}}} - Variável de ambiente
 - {{now}} - Data/hora atual ISO
 - {{uuid}} - UUID aleatório
+
+Formatos adicionais (modo avançado - use_advanced_tags=True):
+- {{value | format:"DD/MM/YYYY"}} - Pipes/transforms
+- {{= expression}} - Fórmulas matemáticas
+- {{IF condition}}...{{ELSE}}...{{ENDIF}} - Condicionais
+- {{FOR item IN collection}}...{{ENDFOR}} - Loops
+- {{$timestamp}}, {{$date}}, {{$uuid}} - Variáveis globais
 """
 
 import re
@@ -21,6 +28,9 @@ import uuid as uuid_lib
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Union
 from app.models.execution_step import ExecutionStep
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # Regex para encontrar variáveis no formato {{...}}
@@ -38,6 +48,10 @@ def compute_parameters(
     execution_context: Dict[str, Any] = None,
     previous_steps: List[ExecutionStep] = None,
     env_vars: Dict[str, str] = None,
+    use_advanced_tags: bool = False,
+    trigger_source: str = 'generic',
+    workflow_metadata: Dict[str, Any] = None,
+    locale: str = 'pt_BR',
 ) -> Union[Dict[str, Any], List, str, Any]:
     """
     Substitui variáveis nos parâmetros usando dados de steps anteriores.
@@ -50,11 +64,30 @@ def compute_parameters(
         execution_context: Contexto da execução
         previous_steps: Lista de ExecutionSteps anteriores (opcional, será buscado se não fornecido)
         env_vars: Variáveis de ambiente (opcional, usa os.environ se não fornecido)
+        use_advanced_tags: Se True, usa o sistema avançado de tags com pipes, fórmulas, etc.
+        trigger_source: Identificador da fonte (hubspot, webhook, etc.) para normalização
+        workflow_metadata: Metadados do workflow (nome, id)
+        locale: Locale para formatação (default: pt_BR)
 
     Returns:
         Parâmetros com variáveis substituídas
     """
-    # Preparar contexto de substituição
+    # Se usar tags avançadas, delega para o novo sistema
+    if use_advanced_tags:
+        return _compute_with_advanced_tags(
+            parameters=parameters,
+            execution_id=execution_id,
+            trigger_output=trigger_output,
+            flow_context=flow_context,
+            execution_context=execution_context,
+            previous_steps=previous_steps,
+            env_vars=env_vars,
+            trigger_source=trigger_source,
+            workflow_metadata=workflow_metadata,
+            locale=locale,
+        )
+
+    # Modo básico: preparar contexto de substituição
     context = _build_substitution_context(
         execution_id=execution_id,
         trigger_output=trigger_output,
@@ -342,6 +375,192 @@ def validate_parameters(
     }
 
 
+def _compute_with_advanced_tags(
+    parameters: Union[Dict[str, Any], List, str, Any],
+    execution_id: str = None,
+    trigger_output: Dict[str, Any] = None,
+    flow_context: Dict[str, Any] = None,
+    execution_context: Dict[str, Any] = None,
+    previous_steps: List[ExecutionStep] = None,
+    env_vars: Dict[str, str] = None,
+    trigger_source: str = 'generic',
+    workflow_metadata: Dict[str, Any] = None,
+    locale: str = 'pt_BR',
+) -> Union[Dict[str, Any], List, str, Any]:
+    """
+    Processa parâmetros usando o sistema avançado de tags.
+
+    Suporta:
+    - Pipes/transforms: {{value | format:"DD/MM/YYYY"}}
+    - Fórmulas: {{= expression}}
+    - Condicionais: {{IF condition}}...{{ELSE}}...{{ENDIF}}
+    - Loops: {{FOR item IN collection}}...{{ENDFOR}}
+    - Variáveis globais: {{$timestamp}}, {{$date}}, etc.
+
+    Args:
+        parameters: Parâmetros a processar
+        execution_id: ID da execução
+        trigger_output: Output do trigger
+        flow_context: Contexto do workflow
+        execution_context: Contexto da execução
+        previous_steps: Steps anteriores
+        env_vars: Variáveis de ambiente
+        trigger_source: Fonte do trigger (hubspot, webhook, etc.)
+        workflow_metadata: Metadados do workflow
+        locale: Locale para formatação
+
+    Returns:
+        Parâmetros processados
+    """
+    try:
+        # Importar o sistema de tags avançado
+        from app.tags.context.builder import ContextBuilder
+
+        # Construir lista de previous steps no formato esperado
+        previous_steps_list = []
+        if previous_steps:
+            for step in previous_steps:
+                if step.data_out:
+                    previous_steps_list.append({
+                        'step_id': str(step.step_id),
+                        'node_id': str(step.node_id) if hasattr(step, 'node_id') else None,
+                        'action_key': getattr(step, 'action_key', None),
+                        'data_out': step.data_out
+                    })
+        elif execution_id:
+            # Buscar do banco
+            steps = ExecutionStep.get_by_execution(execution_id, status='success')
+            for step in steps:
+                if step.data_out:
+                    previous_steps_list.append({
+                        'step_id': str(step.step_id),
+                        'node_id': str(step.node_id) if hasattr(step, 'node_id') else None,
+                        'action_key': getattr(step, 'action_key', None),
+                        'data_out': step.data_out
+                    })
+
+        # Construir contexto usando o ContextBuilder
+        context_builder = ContextBuilder(locale=locale)
+        context = context_builder.build(
+            trigger_data=trigger_output,
+            trigger_source=trigger_source,
+            previous_steps=previous_steps_list,
+            flow_context=flow_context,
+            execution_context=execution_context,
+            env_vars=env_vars or dict(os.environ),
+            workflow_metadata=workflow_metadata
+        )
+
+        # Importar e usar o TagProcessor
+        from app.tags import TagProcessor
+        processor = TagProcessor(context=context, locale=locale)
+
+        return processor.process(parameters)
+
+    except Exception as e:
+        logger.warning(f"Advanced tag processing failed, falling back to basic: {e}")
+        # Fallback para o modo básico
+        context = _build_substitution_context(
+            execution_id=execution_id,
+            trigger_output=trigger_output,
+            flow_context=flow_context,
+            execution_context=execution_context,
+            previous_steps=previous_steps,
+            env_vars=env_vars,
+        )
+        return _substitute_recursive(parameters, context)
+
+
+def has_advanced_tag_syntax(text: str) -> bool:
+    """
+    Detecta se o texto contém sintaxe avançada de tags.
+
+    Útil para auto-detectar quando usar o modo avançado.
+
+    Args:
+        text: Texto a analisar
+
+    Returns:
+        True se contém pipes, fórmulas, condicionais ou loops
+    """
+    if not isinstance(text, str):
+        return False
+
+    # Padrões de sintaxe avançada
+    advanced_patterns = [
+        r'\{\{[^}]+\|',           # Pipes: {{value | transform}}
+        r'\{\{=',                  # Fórmulas: {{= expression}}
+        r'\{\{IF\s',               # Condicionais: {{IF condition}}
+        r'\{\{FOR\s',              # Loops: {{FOR item IN}}
+        r'\{\{\$',                 # Variáveis globais: {{$timestamp}}
+    ]
+
+    for pattern in advanced_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+
+    return False
+
+
+def detect_and_compute(
+    parameters: Union[Dict[str, Any], List, str, Any],
+    execution_id: str = None,
+    trigger_output: Dict[str, Any] = None,
+    flow_context: Dict[str, Any] = None,
+    execution_context: Dict[str, Any] = None,
+    previous_steps: List[ExecutionStep] = None,
+    env_vars: Dict[str, str] = None,
+    trigger_source: str = 'generic',
+    workflow_metadata: Dict[str, Any] = None,
+    locale: str = 'pt_BR',
+) -> Union[Dict[str, Any], List, str, Any]:
+    """
+    Auto-detecta se deve usar tags avançadas e processa.
+
+    Verifica o conteúdo e usa o modo avançado se detectar
+    sintaxe como pipes, fórmulas, condicionais ou loops.
+
+    Args:
+        parameters: Parâmetros a processar
+        (demais argumentos iguais a compute_parameters)
+
+    Returns:
+        Parâmetros processados
+    """
+    # Verificar se precisa de tags avançadas
+    use_advanced = False
+
+    def check_value(value):
+        nonlocal use_advanced
+        if use_advanced:
+            return
+        if isinstance(value, str):
+            if has_advanced_tag_syntax(value):
+                use_advanced = True
+        elif isinstance(value, dict):
+            for v in value.values():
+                check_value(v)
+        elif isinstance(value, list):
+            for item in value:
+                check_value(item)
+
+    check_value(parameters)
+
+    return compute_parameters(
+        parameters=parameters,
+        execution_id=execution_id,
+        trigger_output=trigger_output,
+        flow_context=flow_context,
+        execution_context=execution_context,
+        previous_steps=previous_steps,
+        env_vars=env_vars,
+        use_advanced_tags=use_advanced,
+        trigger_source=trigger_source,
+        workflow_metadata=workflow_metadata,
+        locale=locale,
+    )
+
+
 # Classe helper para uso fluente
 class ParameterComputer:
     """
@@ -351,6 +570,11 @@ class ParameterComputer:
         computer = ParameterComputer(execution_id='abc')
         computer.set_trigger_output({'contact': {'id': '123'}})
         result = computer.compute({'email': '{{trigger.contact.email}}'})
+
+    Para tags avançadas:
+        computer = ParameterComputer(use_advanced_tags=True, locale='pt_BR')
+        computer.set_trigger_output({'deal': {'amount': 50000}})
+        result = computer.compute('Total: {{trigger.deal.amount | currency:"BRL"}}')
     """
 
     def __init__(
@@ -359,23 +583,48 @@ class ParameterComputer:
         trigger_output: Dict[str, Any] = None,
         flow_context: Dict[str, Any] = None,
         execution_context: Dict[str, Any] = None,
+        use_advanced_tags: bool = False,
+        trigger_source: str = 'generic',
+        workflow_metadata: Dict[str, Any] = None,
+        locale: str = 'pt_BR',
     ):
         self.execution_id = execution_id
         self.trigger_output = trigger_output or {}
         self.flow_context = flow_context or {}
         self.execution_context = execution_context or {}
         self._step_outputs: Dict[str, Dict[str, Any]] = {}
+        self.use_advanced_tags = use_advanced_tags
+        self.trigger_source = trigger_source
+        self.workflow_metadata = workflow_metadata or {}
+        self.locale = locale
 
     def set_trigger_output(self, output: Dict[str, Any]):
         """Define o output do trigger"""
         self.trigger_output = output
 
+    def set_trigger_source(self, source: str):
+        """Define a fonte do trigger (hubspot, webhook, etc.)"""
+        self.trigger_source = source
+
+    def set_workflow_metadata(self, metadata: Dict[str, Any]):
+        """Define metadados do workflow"""
+        self.workflow_metadata = metadata
+
     def add_step_output(self, step_id: str, output: Dict[str, Any]):
         """Adiciona output de um step"""
         self._step_outputs[step_id] = output
 
-    def compute(self, parameters: Any) -> Any:
-        """Computa parâmetros usando o contexto definido"""
+    def compute(self, parameters: Any, auto_detect: bool = False) -> Any:
+        """
+        Computa parâmetros usando o contexto definido.
+
+        Args:
+            parameters: Parâmetros a processar
+            auto_detect: Se True, auto-detecta se deve usar tags avançadas
+
+        Returns:
+            Parâmetros processados
+        """
         # Criar ExecutionSteps fake para o contexto
         class FakeStep:
             def __init__(self, step_id, data_out):
@@ -386,6 +635,19 @@ class ParameterComputer:
             FakeStep(sid, out) for sid, out in self._step_outputs.items()
         ]
 
+        if auto_detect:
+            return detect_and_compute(
+                parameters=parameters,
+                execution_id=self.execution_id,
+                trigger_output=self.trigger_output,
+                flow_context=self.flow_context,
+                execution_context=self.execution_context,
+                previous_steps=previous_steps,
+                trigger_source=self.trigger_source,
+                workflow_metadata=self.workflow_metadata,
+                locale=self.locale,
+            )
+
         return compute_parameters(
             parameters=parameters,
             execution_id=self.execution_id,
@@ -393,4 +655,8 @@ class ParameterComputer:
             flow_context=self.flow_context,
             execution_context=self.execution_context,
             previous_steps=previous_steps,
+            use_advanced_tags=self.use_advanced_tags,
+            trigger_source=self.trigger_source,
+            workflow_metadata=self.workflow_metadata,
+            locale=self.locale,
         )

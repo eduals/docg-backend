@@ -169,3 +169,71 @@ def get_signature(signature_id):
         sig_dict['workflow'] = None
     
     return jsonify(sig_dict)
+
+
+@signatures_bp.route('/<signature_id>/signers', methods=['GET'])
+@flexible_hubspot_auth
+@require_auth
+@require_org
+def get_signers_status(signature_id):
+    """
+    Retorna status detalhado de cada signatário.
+
+    Feature 11: Melhorias em Signatures
+
+    Response:
+    {
+        "signature_request_id": "uuid",
+        "status": "pending|sent|signed|declined|expired",
+        "provider": "clicksign|zapsign",
+        "expires_at": "ISO8601",
+        "all_signed": false,
+        "signers": [
+            {
+                "email": "user@example.com",
+                "status": "pending|viewed|signed|declined",
+                "signed_at": "ISO8601|null"
+            }
+        ]
+    }
+    """
+    org_id = uuid.UUID(g.organization_id) if isinstance(g.organization_id, str) else g.organization_id
+
+    signature_request = SignatureRequest.query.filter_by(
+        id=signature_id,
+        organization_id=org_id
+    ).first_or_404()
+
+    # Construir lista de signatários
+    signers = []
+    if signature_request.signers_status:
+        for email, status in signature_request.signers_status.items():
+            signer_info = {
+                'email': email,
+                'status': status,
+                'signed_at': None,  # TODO: Armazenar timestamp individual por signatário
+            }
+
+            # Se assinado e temos completed_at, usar como aproximação
+            if status == 'signed' and signature_request.completed_at:
+                signer_info['signed_at'] = signature_request.completed_at.isoformat()
+
+            signers.append(signer_info)
+    else:
+        # Fallback: Se não tiver signers_status, usar signers (lista de emails)
+        if hasattr(signature_request, 'signers') and signature_request.signers:
+            for email in signature_request.signers:
+                signers.append({
+                    'email': email,
+                    'status': signature_request.status,  # Status geral
+                    'signed_at': signature_request.completed_at.isoformat() if signature_request.completed_at else None,
+                })
+
+    return jsonify({
+        'signature_request_id': str(signature_request.id),
+        'status': signature_request.status,
+        'provider': signature_request.provider,
+        'expires_at': signature_request.expires_at.isoformat() if signature_request.expires_at else None,
+        'all_signed': signature_request.all_signed(),
+        'signers': signers,
+    }), 200

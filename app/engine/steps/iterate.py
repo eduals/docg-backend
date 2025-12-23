@@ -11,7 +11,57 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 import logging
 
+from app.engine.phases import ExecutionPhase, should_stop_at_phase
+
 logger = logging.getLogger(__name__)
+
+
+def detect_phase(node) -> ExecutionPhase:
+    """
+    Detecta a fase de execução de um node baseado no action_key.
+
+    Args:
+        node: WorkflowNode
+
+    Returns:
+        ExecutionPhase correspondente
+    """
+    # Obter action_key dos parâmetros ou config
+    action_key = ''
+    if hasattr(node, 'parameters') and node.parameters:
+        action_key = node.parameters.get('action_key', '')
+    elif hasattr(node, 'config') and node.config:
+        action_key = node.config.get('action_key', '')
+
+    # Obter node_type
+    node_type = getattr(node, 'node_type', '')
+
+    # Preflight é sempre primeiro
+    if action_key == 'preflight':
+        return ExecutionPhase.PREFLIGHT
+
+    # Trigger
+    if node_type == 'trigger' or 'trigger' in action_key:
+        return ExecutionPhase.TRIGGER
+
+    # Render (document generation)
+    if any(key in action_key for key in ['replace-tags', 'copy-template', 'generate']):
+        return ExecutionPhase.RENDER
+
+    # Save (upload, storage)
+    if any(key in action_key for key in ['upload', 'save', 'export-pdf']):
+        return ExecutionPhase.SAVE
+
+    # Delivery (email)
+    if any(key in action_key for key in ['send-email', 'gmail', 'outlook']):
+        return ExecutionPhase.DELIVERY
+
+    # Signature
+    if any(key in action_key for key in ['signature', 'clicksign', 'zapsign']):
+        return ExecutionPhase.SIGNATURE
+
+    # Default: render
+    return ExecutionPhase.RENDER
 
 
 async def iterate_steps(
@@ -23,6 +73,8 @@ async def iterate_steps(
     until_step: Optional[str] = None,
     skip_steps: Optional[List[str]] = None,
     mock_data: Optional[Dict[str, Any]] = None,
+    dry_run: bool = False,
+    until_phase: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Itera sobre todos os steps de um workflow.
@@ -36,6 +88,8 @@ async def iterate_steps(
         until_step: Para ANTES de executar este step (opcional)
         skip_steps: Lista de step_ids a pular (opcional)
         mock_data: Dict de {step_id: mock_output} para simular outputs (opcional)
+        dry_run: Se True, pula persistência em delivery/signature (opcional)
+        until_phase: Para após fase específica (opcional)
 
     Returns:
         Dict com resultado da execução
@@ -161,6 +215,14 @@ async def iterate_steps(
                 logger.warning(f"Node {node_id} not found, skipping")
                 break
 
+            # Detectar fase do node atual
+            phase = detect_phase(action_node)
+
+            # Verificar se deve parar nesta fase (until_phase)
+            if should_stop_at_phase(phase, until_phase):
+                logger.info(f"Stopping at phase {phase.value} (until_phase={until_phase})")
+                break
+
             # Verificar se step deve ser pulado
             if node_id in skip_set:
                 logger.info(f"Skipping node {action_node.position}: {action_node.node_type} ({node_id})")
@@ -174,6 +236,30 @@ async def iterate_steps(
                     db.session.add(skip_step)
                     skip_step.status = 'skipped'
                     db.session.commit()
+                # Determinar próximo e continuar
+                current_node_data = get_next_node(
+                    flow_context=flow_context,
+                    current_node_id=node_id,
+                    context={},
+                    previous_steps=previous_steps,
+                )
+                continue
+
+            # Modo dry-run: Pular persistência em delivery/signature
+            if dry_run and phase in [ExecutionPhase.DELIVERY, ExecutionPhase.SIGNATURE]:
+                logger.info(f"Dry-run mode: Skipping {phase.value} phase for node {node_id}")
+                # Criar ExecutionStep marcado como skipped
+                if not test_run:
+                    skip_step = ExecutionStep.create_for_node(
+                        execution_id=execution_id,
+                        node=action_node,
+                        data_in=action_node.config,
+                    )
+                    db.session.add(skip_step)
+                    skip_step.status = 'skipped'
+                    skip_step.data_out = {'reason': 'dry_run_mode', 'phase': phase.value}
+                    db.session.commit()
+                    previous_steps.append(skip_step)
                 # Determinar próximo e continuar
                 current_node_data = get_next_node(
                     flow_context=flow_context,

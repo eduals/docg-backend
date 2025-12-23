@@ -1,8 +1,8 @@
 # CLAUDE.md - DocG Backend Architecture Guide
 
-> **Versão:** 2.0 - Execution Observável
+> **Versão:** 2.2 - Post-MVP Features
 > **Atualizado:** 23 de Dezembro de 2025
-> **Status:** ✅ Implementação Completa (14/14 features)
+> **Status:** ✅ Implementação Completa (14/14 features v2.0 + Tags v2.1 + Post-MVP v2.2)
 > **Propósito:** Referência arquitetural completa para desenvolvimento
 
 ---
@@ -14,12 +14,14 @@
 3. [Estrutura de Diretórios](#estrutura-de-diretórios)
 4. [Modelo de Dados](#modelo-de-dados-principal)
 5. [Execução v2.0](#execução-v20-features-implementadas)
-6. [API REST](#api-rest-principal)
-7. [SSE e Realtime](#sse-server-sent-events)
-8. [Variáveis de Ambiente](#variáveis-de-ambiente)
-9. [Comandos Úteis](#comandos-úteis)
-10. [Erros Comuns](#️-erros-comuns-e-soluções)
-11. [Testes e Verificação](#testes-e-verificação)
+6. [Sistema de Tags Avançadas](#sistema-de-tags-avançadas)
+7. [HubSpot Expandido](#hubspot-expandido)
+8. [API REST](#api-rest-principal)
+9. [SSE e Realtime](#sse-server-sent-events)
+10. [Variáveis de Ambiente](#variáveis-de-ambiente)
+11. [Comandos Úteis](#comandos-úteis)
+12. [Erros Comuns](#️-erros-comuns-e-soluções)
+13. [Testes e Verificação](#testes-e-verificação)
 
 ---
 
@@ -41,6 +43,21 @@ Sistema de **geração automatizada de documentos** que:
 - ✅ **Logs estruturados** - Consultáveis e filtráveis
 - ✅ **Audit trail** - Rastreamento imutável para compliance
 - ✅ **Pause/Resume** - Controle total da execução
+
+### Diferencial v2.1 (Tags + HubSpot)
+
+- ✅ **Tags Avançadas** - Pipes, fórmulas, condicionais, loops
+- ✅ **Preview de Tags** - Validação antes de gerar documento
+- ✅ **Multi-CRM** - Normalização para HubSpot, Webhook, Forms, Stripe
+- ✅ **HubSpot Tickets** - CRUD completo
+- ✅ **HubSpot Line Items** - Busca e criação
+- ✅ **Associações** - Acesso a objetos relacionados
+
+### Diferencial v2.2 (Post-MVP)
+
+- ✅ **Dry-run & Until Phase** - Execução preview sem persistência
+- ✅ **Signature Events SSE** - Eventos granulares por signatário
+- ✅ **Loops em Google Docs** - Duplicação automática de linhas de tabela
 
 ---
 
@@ -119,18 +136,41 @@ docg-backend/
 │   │   └── storage/             # Generic storage
 │   │
 │   ├── engine/                  # Engine de Execução
-│   │   ├── engine.py            # Engine.run() - ponto de entrada
+│   │   ├── engine.py            # Engine.run() - ponto de entrada (+ dry_run, until_phase)
+│   │   ├── phases.py            # NEW v2.2 - ExecutionPhase enum
 │   │   ├── context.py           # Build ExecutionContext
-│   │   ├── compute_parameters.py # Substituição {{variáveis}}
+│   │   ├── compute_parameters.py # Substituição {{variáveis}} + tags avançadas
 │   │   ├── validate_parameters.py # Validação de arguments
 │   │   ├── action/
 │   │   │   └── process.py       # process_action_step()
 │   │   ├── trigger/
 │   │   │   └── process.py       # process_trigger_step()
 │   │   ├── steps/
-│   │   │   └── iterate.py       # iterate_steps() - loop principal
+│   │   │   └── iterate.py       # iterate_steps() - loop principal (+ phase detection)
 │   │   └── flow/
 │   │       └── context.py       # FlowContext, get_next_node()
+│   │
+│   ├── tags/                    # NEW - Sistema de Tags Avançadas
+│   │   ├── __init__.py          # TagProcessor principal
+│   │   ├── parser/              # Lexer, AST, Parser
+│   │   │   ├── lexer.py         # Tokenização (40+ tokens)
+│   │   │   ├── ast.py           # AST nodes
+│   │   │   └── parser.py        # Parser principal
+│   │   ├── transforms/          # Transforms (pipes)
+│   │   │   ├── base.py          # TransformRegistry
+│   │   │   ├── text.py          # upper, lower, truncate, concat
+│   │   │   ├── date.py          # format com locale
+│   │   │   └── number.py        # currency, number, round
+│   │   ├── engine/              # Avaliação
+│   │   │   ├── evaluator.py     # TagEvaluator
+│   │   │   ├── formula.py       # FormulaEvaluator (AST seguro)
+│   │   │   └── functions.py     # SUM, ROUND, IF, AVG, etc
+│   │   ├── context/             # Contexto Multi-CRM
+│   │   │   ├── builder.py       # ContextBuilder
+│   │   │   ├── normalizer.py    # HubSpot, Webhook, Forms, Stripe
+│   │   │   └── global_vars.py   # $timestamp, $date, etc
+│   │   └── preview/             # Preview de tags
+│   │       └── service.py       # TagPreviewService
 │   │
 │   ├── temporal/                # Temporal.io (Async)
 │   │   ├── client.py            # Temporal client
@@ -151,12 +191,14 @@ docg-backend/
 │   │
 │   ├── services/                # Serviços de Negócio
 │   │   ├── document_generation/ # Geração de docs
+│   │   │   ├── loop_parser.py   # NEW v2.2 - Parser de loops {{FOR}}
+│   │   │   └── table_loops.py   # NEW v2.2 - Duplicação de linhas
 │   │   ├── ai/                  # Integração com LLMs
 │   │   ├── storage/             # Upload/download S3
 │   │   ├── sse_publisher.py     # SSE Publisher (Redis Streams + Schema v1)
-│   │   ├── execution_logger.py  # NEW - Logs estruturados
-│   │   ├── audit_service.py     # NEW - Audit helper
-│   │   └── recommended_actions.py # NEW - CTAs para issues
+│   │   ├── execution_logger.py  # NEW v2.0 - Logs estruturados
+│   │   ├── audit_service.py     # NEW v2.0 - Audit helper
+│   │   └── recommended_actions.py # NEW v2.0 - CTAs para issues
 │   │
 │   ├── routes/                  # Rotas especiais
 │   │   └── sse.py               # SSE endpoint (Streams + replay)
@@ -180,9 +222,7 @@ docg-backend/
 │
 ├── requirements.txt
 ├── .env                         # Environment variables
-├── CLAUDE.md                    # Este arquivo
-├── TEST_NEW_FEATURES.md         # Guia de testes completo
-├── IMPLEMENTATION_COMPLETE.md   # Resumo da implementação
+├── CLAUDE.md                    # Este arquivo - Documentação completa
 └── verify_features.py           # Script de verificação
 ```
 
@@ -235,7 +275,6 @@ Organization
 
 > ✅ **Status:** 14/14 features implementadas e testadas
 > 📅 **Data:** 23 de Dezembro de 2025
-> 🔗 **Documentação completa:** `TEST_NEW_FEATURES.md`
 
 ### F1: Run State Unificado ✅
 
@@ -355,18 +394,30 @@ GET /api/v1/executions/{id}/preflight
 
 #### Tipos de Eventos
 
+**Execução:**
 - `execution.created`
 - `execution.status_changed`
 - `execution.progress`
 - `preflight.completed`
-- `step.started`
-- `step.completed`
-- `step.failed`
 - `execution.completed`
 - `execution.failed`
 - `execution.canceled`
+
+**Steps:**
+- `step.started`
+- `step.completed`
+- `step.failed`
+
+**Signatures (v2.0):**
 - `signature.requested`
 - `signature.completed`
+
+**Signatures Granulares (v2.2):**
+- `signature.signer.viewed` - Signatário visualizou documento
+- `signature.signer.signed` - Signatário assinou
+- `signature.signer.declined` - Signatário recusou
+- `signature.expired` - Documento expirou
+- `signature.completed` - Todos signatários assinaram
 
 ### F4: SSE com Replay (Redis Streams) ✅
 
@@ -649,6 +700,252 @@ execution.complete_phase('render')  # Calcula duration_ms automaticamente
 
 ---
 
+## Sistema de Tags Avançadas
+
+> **Versão:** 1.0
+> **Status:** ✅ Implementado
+
+Sistema de processamento de tags inspirado no Docmergy e Portant, com sintaxe de pipes, fórmulas matemáticas, condicionais e loops.
+
+### Sintaxe Suportada
+
+#### Pipes/Transforms
+
+```
+{{trigger.deal.closedate | format:"DD/MM/YYYY"}}
+{{trigger.deal.amount | currency:"BRL"}}
+{{trigger.contact.firstname | upper}}
+{{trigger.contact.email | lower}}
+{{trigger.deal.description | truncate:100}}
+```
+
+#### Fórmulas Matemáticas
+
+```
+{{= trigger.deal.amount * 1.1}}
+{{= ROUND(trigger.deal.amount, 2)}}
+{{= SUM(trigger.deal.line_items.amount)}}
+{{= IF(trigger.deal.amount > 10000, "Enterprise", "Standard")}}
+```
+
+#### Condicionais em Bloco
+
+```
+{{IF trigger.deal.amount > 50000}}
+Você se qualifica para desconto de 10%!
+{{ELSE}}
+Entre em contato para negociar descontos.
+{{ENDIF}}
+```
+
+#### Loops
+
+```
+{{FOR item IN trigger.deal.line_items}}
+- {{item.name}}: {{item.quantity}} x {{item.price | currency:"BRL"}}
+{{ENDFOR}}
+```
+
+#### Variáveis Globais
+
+```
+{{$timestamp}}           # ISO timestamp da geração
+{{$date}}                # Data atual YYYY-MM-DD
+{{$date_br}}             # Data atual DD/MM/YYYY
+{{$time}}                # Hora atual HH:MM
+{{$uuid}}                # UUID aleatório
+{{$workflow_name}}       # Nome do workflow
+```
+
+### Transforms Disponíveis
+
+| Categoria | Transforms |
+|-----------|------------|
+| **Texto** | `upper`, `lower`, `capitalize`, `truncate`, `concat`, `trim`, `replace`, `default` |
+| **Data** | `format` (com locale pt-BR/en-US), `add_days`, `add_months`, `relative` |
+| **Número** | `currency` (BRL, USD, EUR), `number`, `round`, `percent` |
+
+### Funções para Fórmulas
+
+`SUM`, `AVG`, `MIN`, `MAX`, `ROUND`, `ABS`, `IF`, `CONCAT`, `LEN`, `NOW`, `TODAY`
+
+### Uso no Código
+
+```python
+# Modo básico (retrocompatível)
+from app.engine.compute_parameters import compute_parameters
+result = compute_parameters(params, trigger_output=data)
+
+# Modo avançado (com pipes, fórmulas, etc)
+result = compute_parameters(
+    params,
+    trigger_output=data,
+    use_advanced_tags=True,
+    trigger_source='hubspot',
+    locale='pt_BR'
+)
+
+# Auto-detecção (detecta sintaxe avançada automaticamente)
+from app.engine.compute_parameters import detect_and_compute
+result = detect_and_compute(params, trigger_output=data)
+```
+
+### Preview de Tags
+
+**Endpoint:** `POST /api/v1/workflows/{id}/tags/preview`
+
+**Request:**
+```json
+{
+  "object_type": "deal",
+  "object_id": "123456",
+  "template_content": "Valor: {{trigger.deal.amount | currency:\"BRL\"}}"
+}
+```
+
+**Response:**
+```json
+{
+  "tags": [
+    {"tag": "{{trigger.deal.amount | currency:\"BRL\"}}", "resolved": "R$ 50.000,00", "status": "ok"}
+  ],
+  "loops": [],
+  "conditionals": [],
+  "warnings": [],
+  "errors": [],
+  "sample_output": "Valor: R$ 50.000,00",
+  "stats": {"total_tags": 1, "resolved": 1, "warnings": 0, "errors": 0}
+}
+```
+
+### Multi-CRM Normalizers
+
+| Normalizer | Fonte | Associações |
+|------------|-------|-------------|
+| `HubSpotNormalizer` | HubSpot CRM | ✅ Sim |
+| `WebhookNormalizer` | Webhook genérico | ❌ Não |
+| `GoogleFormsNormalizer` | Google Forms | ❌ Não |
+| `StripeNormalizer` | Stripe webhooks | ⚠️ Parcial |
+
+### Segurança
+
+- **Fórmulas:** AST parsing seguro (NÃO usa `eval()`)
+- **Loops:** Limite de 1000 iterações
+- **Recursão:** Máximo 3 níveis de loops aninhados
+
+---
+
+## HubSpot Expandido
+
+> **Versão:** 1.0
+> **Status:** ✅ Implementado
+> **OAuth Scopes Adicionais:** `tickets`, `e-commerce`
+
+### Actions de Tickets
+
+| Action | Descrição |
+|--------|-----------|
+| `create-ticket` | Cria novo ticket |
+| `update-ticket` | Atualiza ticket existente |
+| `get-ticket` | Busca dados de um ticket |
+
+**Exemplo - Criar Ticket:**
+```json
+{
+  "subject": "Suporte técnico",
+  "content": "Descrição do problema",
+  "priority": "HIGH",
+  "pipeline_stage": "1"
+}
+```
+
+### Actions de Line Items
+
+| Action | Descrição |
+|--------|-----------|
+| `get-line-items` | Busca line items de um deal |
+| `create-line-item` | Cria line item (opcionalmente associado a deal) |
+
+**Exemplo - Buscar Line Items:**
+```json
+{
+  "deal_id": "123456"
+}
+```
+
+**Response:**
+```json
+{
+  "deal_id": "123456",
+  "line_items": [
+    {
+      "id": "789",
+      "name": "Produto A",
+      "price": 100.00,
+      "quantity": 2,
+      "amount": 200.00
+    }
+  ],
+  "count": 1,
+  "total_amount": 200.00
+}
+```
+
+### Sistema de Associações
+
+Helper para buscar objetos relacionados no HubSpot:
+
+```python
+from app.apps.hubspot.common import AssociationsHelper
+
+helper = AssociationsHelper(http_client)
+
+# Buscar contatos de um deal
+contacts = await helper.get_associated_objects('deal', deal_id, 'contact')
+
+# Buscar company de um deal
+company = await helper.get_first_associated_object('deal', deal_id, 'company')
+
+# Buscar line items de um deal
+line_items = await helper.get_associated_objects('deal', deal_id, 'line_item')
+```
+
+**Funções Helper:**
+```python
+from app.apps.hubspot.common import (
+    get_deal_contacts,
+    get_deal_company,
+    get_deal_line_items,
+    get_contact_company,
+    get_contact_deals,
+)
+```
+
+### OAuth Scopes
+
+```python
+# IMPORTANTE: Usar scopes corretos!
+
+# Tickets - NÃO usar crm.objects.tickets
+✅ CORRETO: 'tickets'
+❌ ERRADO: 'crm.objects.tickets.read'
+
+# Line Items - NÃO usar crm.objects.line_items
+✅ CORRETO: 'e-commerce'
+❌ ERRADO: 'crm.objects.line_items.read'
+```
+
+### Associações Disponíveis
+
+| Objeto | Associações |
+|--------|-------------|
+| Contact | companies, deals |
+| Deal | contacts, companies, line_items |
+| Company | contacts, deals, tickets |
+| Ticket | contacts, companies |
+
+---
+
 ## API REST Principal
 
 ### Base URL
@@ -680,7 +977,12 @@ X-Organization-ID: <uuid>
 | **Controle de Execução** | | |
 | POST | `/executions/{id}/resume` | Retomar após needs_review |
 | POST | `/executions/{id}/cancel` | Cancelar execução |
-| POST | `/executions/{id}/retry` | Criar nova execução (retry) |
+| POST | `/executions/{id}/retry` | Criar nova execução (retry, **+ dry_run/until_phase v2.2**) |
+| **Tags Preview (v2.1)** | | |
+| POST | `/workflows/{id}/tags/preview` | Preview de resolução de tags |
+| POST | `/workflows/{id}/tags/validate` | Validar sintaxe de tags |
+| **Signatures (v2.2)** | | |
+| GET | `/signatures/{id}/signers` | Status detalhado de signatários |
 
 ### Endpoints - Workflows (Existentes)
 
@@ -1130,8 +1432,6 @@ O script verifica:
 
 ### Testes Manuais
 
-Ver documentação completa em: **`TEST_NEW_FEATURES.md`**
-
 #### Teste Rápido de SSE
 
 ```bash
@@ -1172,14 +1472,6 @@ pytest tests/engine/ -v
 # Com coverage
 pytest --cov=app tests/
 ```
-
-### Documentação de Testes
-
-| Arquivo | Conteúdo |
-|---------|----------|
-| `TEST_NEW_FEATURES.md` | Guia completo de testes com exemplos |
-| `verify_features.py` | Script de verificação automatizada |
-| `IMPLEMENTATION_COMPLETE.md` | Resumo da implementação |
 
 ---
 
@@ -1268,7 +1560,7 @@ flask db current
 
 ## Status da Implementação
 
-### ✅ Completo (14/14 features)
+### ✅ Completo (14/14 features v2.0)
 
 - [x] F1: Run State Unificado
 - [x] F2: Preflight Validation
@@ -1282,31 +1574,191 @@ flask db current
 - [x] F13: Recommended Actions
 - [x] F14: Correlation ID + Phase Metrics
 
-### 🔄 Post-MVP (Opcional)
+### ✅ Completo (v2.1 - Tags + HubSpot)
 
-- [ ] F9: Dry-run & Until Phase
-- [ ] F11: Melhorias em Signatures (eventos detalhados)
+- [x] Sistema de Tags Avançadas (Pipes, Fórmulas, Condicionais, Loops)
+- [x] Preview de Tags API
+- [x] Multi-CRM Normalizers (HubSpot, Webhook, Forms, Stripe)
+- [x] HubSpot Tickets (create, update, get)
+- [x] HubSpot Line Items (get, create)
+- [x] HubSpot Associations Helper
+
+### ✅ Post-MVP (v2.2 - Implementado)
+
+- [x] F9: Dry-run & Until Phase - Execução preview sem persistência
+- [x] F11: Melhorias em Signatures - Eventos SSE granulares por signatário
+- [x] F3: Loops em Google Docs - Duplicação de linhas de tabela para arrays
+
+### 🔄 Post-MVP (Futuro)
+
 - [ ] Redis Streams cleanup job
 - [ ] Dashboard de métricas
+- [ ] Triggers para Tickets (new-ticket, ticket-updated)
+- [ ] Signature Reminders (Temporal activities)
 
 ---
 
-## Resumo de Arquivos Importantes
+## Features Post-MVP (v2.2)
 
-| Arquivo | O Que É | Quando Ler |
-|---------|---------|------------|
-| `CLAUDE.md` | Este arquivo - referência completa | Sempre que precisar entender a arquitetura |
-| `TEST_NEW_FEATURES.md` | Guia de testes com exemplos práticos | Ao testar features v2.0 |
-| `IMPLEMENTATION_COMPLETE.md` | Resumo da implementação | Visão geral do que foi feito |
-| `verify_features.py` | Script de verificação | Verificar setup/deployment |
-| `app/models/execution.py` | Run State | Entender estados de execução |
-| `app/services/sse_publisher.py` | SSE Publisher | Debugar real-time events |
-| `app/temporal/activities/preflight.py` | Preflight | Entender validações |
+### F9: Dry-run & Until Phase
+
+Controle granular de execução para testes e desenvolvimento.
+
+**Parâmetros:**
+
+```python
+await Engine.run(
+    workflow_id='...',
+    trigger_data={...},
+    dry_run=True,           # Pula delivery/signature
+    until_phase='render',   # Para após fase específica
+)
+```
+
+**Fases Disponíveis:**
+1. `preflight` - Validações pré-execução
+2. `trigger` - Extração de dados
+3. `render` - Geração de documentos
+4. `save` - Persistência (Drive/Storage)
+5. `delivery` - Envio de emails
+6. `signature` - Coleta de assinaturas
+
+**Arquivos:**
+- `app/engine/phases.py` - Enum de fases
+- `app/engine/engine.py` - Parâmetros dry_run/until_phase
+- `app/engine/steps/iterate.py` - Lógica de detecção e parada
+
+**Endpoint:**
+```bash
+POST /api/v1/executions/{id}/retry
+{
+  "dry_run": true,
+  "until_phase": "render"
+}
+```
 
 ---
 
-**Versão:** 2.0 - Execution Observável
+### F11: Melhorias em Signatures
+
+Eventos SSE granulares para tracking individual de signatários.
+
+**Novos Eventos SSE:**
+
+| Evento | Quando | Payload |
+|--------|--------|---------|
+| `signature.signer.viewed` | Signatário visualizou | `{signer_email, signature_request_id}` |
+| `signature.signer.signed` | Signatário assinou | `{signer_email, signed_at}` |
+| `signature.signer.declined` | Signatário recusou | `{signer_email, reason}` |
+| `signature.expired` | Documento expirou | `{signature_request_id, expires_at}` |
+| `signature.completed` | Todos assinaram | `{all_signers[]}` |
+
+**Endpoint de Status:**
+```bash
+GET /api/v1/signatures/{id}/signers
+```
+
+Retorna:
+```json
+{
+  "signature_request_id": "uuid",
+  "status": "pending",
+  "all_signed": false,
+  "signers": [
+    {
+      "email": "user@example.com",
+      "status": "signed",
+      "signed_at": "2025-12-23T10:30:00Z"
+    }
+  ]
+}
+```
+
+**Arquivos:**
+- `app/routes/webhooks.py` - Emissão de eventos SSE granulares
+- `app/routes/signatures.py` - Endpoint /signers
+
+---
+
+### F3: Loops em Google Docs
+
+Duplicação automática de linhas de tabela para arrays.
+
+**Sintaxe:**
+```
+{{FOR item IN line_items}}
+{{item.name}} - {{item.quantity}} x {{item.price}}
+{{END FOR}}
+```
+
+**Exemplo:**
+
+Template (linha de tabela):
+```
+| {{FOR item IN line_items}}{{item.name}}{{END FOR}} | {{FOR item IN line_items}}{{item.price}}{{END FOR}} |
+```
+
+Dados:
+```json
+{
+  "line_items": [
+    {"name": "Product A", "price": 100},
+    {"name": "Product B", "price": 200}
+  ]
+}
+```
+
+Resultado: 2 linhas duplicadas na tabela.
+
+**Arquivos:**
+- `app/services/document_generation/loop_parser.py` - Parser de sintaxe
+- `app/services/document_generation/table_loops.py` - Lógica de duplicação
+- `app/apps/google_docs/actions/replace_tags.py` - Integração
+
+**Uso:**
+
+1. Adicione o loop em uma linha de tabela no Google Docs
+2. Passe o array no `replacements`:
+```python
+{
+  "line_items": [
+    {"name": "Item 1", "price": "R$ 100"},
+    {"name": "Item 2", "price": "R$ 200"}
+  ]
+}
+```
+3. A action `replace-tags` detecta e duplica automaticamente
+
+---
+
+## Arquivos Principais do Código
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `app/models/execution.py` | Run State - Estados de execução e métricas |
+| `app/models/execution_log.py` | Logs estruturados consultáveis |
+| `app/models/audit_event.py` | Audit trail append-only |
+| `app/services/sse_publisher.py` | SSE Publisher com Redis Streams |
+| `app/services/execution_logger.py` | Helper para logging estruturado |
+| `app/services/audit_service.py` | Helper para auditoria |
+| `app/temporal/activities/preflight.py` | Validação prévia de workflows |
+| `app/temporal/workflows/docg_workflow.py` | Workflow principal com signals |
+| `app/tags/__init__.py` | TagProcessor - Sistema de tags avançadas |
+| `app/tags/parser/parser.py` | Parser de sintaxe de tags |
+| `app/tags/engine/evaluator.py` | Avaliador de tags e fórmulas |
+| `app/engine/compute_parameters.py` | Substituição de variáveis e tags |
+| `app/apps/hubspot/common/associations.py` | Associações HubSpot |
+| `app/engine/phases.py` | **[v2.2]** Enum de fases de execução |
+| `app/services/document_generation/loop_parser.py` | **[v2.2]** Parser de loops para Google Docs |
+| `app/services/document_generation/table_loops.py` | **[v2.2]** Duplicação de linhas de tabela |
+| `verify_features.py` | Script de verificação de setup |
+
+---
+
+**Versão:** 2.2 - Post-MVP Features
 **Status:** ✅ Production Ready
 **Última Atualização:** 23 de Dezembro de 2025
 **Migrations Aplicadas:** 4/4
-**Features Implementadas:** 14/14
+**Features v2.0 Implementadas:** 14/14
+**Features v2.1 Implementadas:** Tags Avançadas, HubSpot Tickets/Line Items/Associations
+**Features v2.2 Implementadas:** Dry-run/Until Phase, Signature Events SSE, Loops Google Docs

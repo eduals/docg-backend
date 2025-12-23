@@ -35,6 +35,8 @@ class Engine:
         until_step: Optional[str] = None,
         skip_steps: Optional[List[str]] = None,
         mock_data: Optional[Dict[str, Any]] = None,
+        dry_run: bool = False,
+        until_phase: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Executa um workflow.
@@ -51,6 +53,8 @@ class Engine:
             until_step: Para a execução ANTES deste step (opcional)
             skip_steps: Lista de step_ids a pular (opcional)
             mock_data: Dict de {step_id: mock_output} para simular outputs (opcional)
+            dry_run: Se True, pula persistência em delivery/signature (opcional)
+            until_phase: Para após fase específica: preflight, trigger, render, save, delivery, signature (opcional)
 
         Returns:
             Dict com resultado da execução
@@ -86,6 +90,8 @@ class Engine:
             until_step=until_step,
             skip_steps=skip_steps,
             mock_data=mock_data,
+            dry_run=dry_run,
+            until_phase=until_phase,
         )
 
     @staticmethod
