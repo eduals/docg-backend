@@ -11,7 +11,6 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-
 def create_execution_step(
     execution_id: str,
     step_id: str,
@@ -54,7 +53,6 @@ def create_execution_step(
         logger.warning(f"Falha ao criar ExecutionStep: {e}")
         return None
 
-
 def start_execution_step(execution_step_id: str) -> bool:
     """
     Marca ExecutionStep como iniciado.
@@ -79,7 +77,6 @@ def start_execution_step(execution_step_id: str) -> bool:
     except Exception as e:
         logger.warning(f"Falha ao iniciar ExecutionStep: {e}")
         return False
-
 
 def complete_execution_step(
     execution_step_id: str,
@@ -109,7 +106,6 @@ def complete_execution_step(
     except Exception as e:
         logger.warning(f"Falha ao completar ExecutionStep: {e}")
         return False
-
 
 def fail_execution_step(
     execution_step_id: str,
@@ -141,7 +137,6 @@ def fail_execution_step(
     except Exception as e:
         logger.warning(f"Falha ao marcar ExecutionStep como falho: {e}")
         return False
-
 
 def get_previous_steps_output(execution_id: str) -> List[Dict[str, Any]]:
     """
@@ -175,7 +170,6 @@ def get_previous_steps_output(execution_id: str) -> List[Dict[str, Any]]:
         logger.warning(f"Falha ao obter steps anteriores: {e}")
         return []
 
-
 def apply_compute_parameters(
     parameters: Dict[str, Any],
     execution_id: str,
@@ -208,7 +202,6 @@ def apply_compute_parameters(
         logger.warning(f"Falha ao aplicar compute_parameters: {e}")
         return parameters
 
-
 def get_app_for_node(node_type: str):
     """
     Obtém App registrado para um tipo de node.
@@ -225,7 +218,6 @@ def get_app_for_node(node_type: str):
     except Exception as e:
         logger.warning(f"Falha ao obter App para {node_type}: {e}")
         return None
-
 
 async def execute_via_app(
     node_type: str,
@@ -258,7 +250,6 @@ async def execute_via_app(
         context=context
     )
 
-
 def build_global_variable_context(
     execution_id: str,
     node_id: str,
@@ -280,7 +271,7 @@ def build_global_variable_context(
     try:
         from app.engine.action.context import build_action_context
         from app.engine.flow.context import build_flow_context
-        from app.models import WorkflowExecution, WorkflowNode
+        from app.models import WorkflowExecution
 
         execution = WorkflowExecution.query.get(execution_id)
         if not execution:
@@ -305,7 +296,6 @@ def build_global_variable_context(
     except Exception as e:
         logger.warning(f"Falha ao construir GlobalVariable: {e}")
         return None
-
 
 # Activity decorator helper
 def with_execution_step(func):

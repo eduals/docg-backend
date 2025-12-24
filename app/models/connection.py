@@ -18,7 +18,7 @@ class DataSourceConnection(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    workflows = db.relationship('Workflow', backref='source_connection', lazy='dynamic')
+    # workflows = db.relationship('Workflow', backref='source_connection', lazy='dynamic')  # REMOVED: workflows.source_connection_id dropado na migration JSONB
     documents = db.relationship('GeneratedDocument', backref='source_connection', lazy='dynamic')
     
     # Para HubSpot - campos de conveniência

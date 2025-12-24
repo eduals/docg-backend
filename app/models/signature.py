@@ -11,8 +11,8 @@ class SignatureRequest(db.Model):
     generated_document_id = db.Column(UUID(as_uuid=True), db.ForeignKey('generated_documents.id'), nullable=False)
     
     # === Temporal Workflow Tracking ===
-    # Qual node criou esta request
-    node_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflow_nodes.id', ondelete='SET NULL'), nullable=True)
+    # Qual node criou esta request (ID do node no workflow.nodes JSONB)
+    node_id = db.Column(db.String(255), nullable=True)
     # Qual execução criou esta request
     workflow_execution_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflow_executions.id', ondelete='SET NULL'), nullable=True)
     
@@ -40,7 +40,6 @@ class SignatureRequest(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    node = db.relationship('WorkflowNode', foreign_keys=[node_id])
     workflow_execution = db.relationship('WorkflowExecution', foreign_keys=[workflow_execution_id], backref='signature_requests')
     
     def all_signed(self) -> bool:

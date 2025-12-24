@@ -45,7 +45,7 @@ async def build_flow_context(workflow_id: str) -> FlowContextData:
 
     Carrega:
     - Dados do workflow
-    - Nodes ordenados por posição
+    - Nodes do JSONB (normalizado para formato engine)
     - Connections associadas
     - Templates referenciados
 
@@ -55,34 +55,33 @@ async def build_flow_context(workflow_id: str) -> FlowContextData:
     Returns:
         FlowContextData com todos os dados
     """
-    from app.models import Workflow, WorkflowNode, DataSourceConnection, Template
+    from app.models import Workflow, DataSourceConnection, Template
+    from app.engine.flow.normalization import normalize_nodes_from_jsonb
 
     # Carregar workflow
     workflow = Workflow.query.get(workflow_id)
     if not workflow:
         raise ValueError(f"Workflow {workflow_id} not found")
 
-    # Carregar nodes ordenados
-    nodes = WorkflowNode.query.filter_by(
-        workflow_id=workflow_id
-    ).order_by(WorkflowNode.position).all()
+    # Normalizar nodes do JSONB para formato engine
+    nodes_data = normalize_nodes_from_jsonb(
+        workflow.nodes or [],
+        workflow.edges or []
+    )
 
-    nodes_data = []
     connection_ids = set()
     template_ids = set()
 
-    for node in nodes:
-        node_dict = node.to_dict(include_config=True)
-        nodes_data.append(node_dict)
-
-        # Coletar IDs de connections e templates referenciados
-        if node.config:
-            if 'connection_id' in node.config:
-                connection_ids.add(node.config['connection_id'])
-            if 'source_connection_id' in node.config:
-                connection_ids.add(node.config['source_connection_id'])
-            if 'template_id' in node.config:
-                template_ids.add(node.config['template_id'])
+    # Coletar IDs de connections e templates referenciados
+    for node in nodes_data:
+        config = node.get('config', {})
+        if config:
+            if 'connection_id' in config:
+                connection_ids.add(config['connection_id'])
+            if 'source_connection_id' in config:
+                connection_ids.add(config['source_connection_id'])
+            if 'template_id' in config:
+                template_ids.add(config['template_id'])
 
     # Carregar connections
     connections = {}
@@ -274,18 +273,22 @@ def get_next_node(
     Returns:
         Dict do próximo node ou None
     """
-    from app.models import WorkflowNode
+    from app.engine.flow.branching import is_branch_node, evaluate_branch_conditions
 
-    # Buscar node no banco para ter acesso aos métodos
-    current_node = WorkflowNode.query.get(current_node_id)
+    # Buscar node no flow_context
+    current_node = get_node_by_id(flow_context, current_node_id)
     if not current_node:
         return None
 
     # Se é branch, avaliar condições
-    if current_node.is_branch():
-        next_node_id = current_node.get_next_node_id(context, previous_steps)
+    if is_branch_node(current_node):
+        next_node_id = evaluate_branch_conditions(
+            current_node,
+            context or {},
+            previous_steps or []
+        )
         if next_node_id:
-            return get_node_by_id(flow_context, str(next_node_id))
+            return get_node_by_id(flow_context, next_node_id)
 
     # Fallback: próximo sequencial
     return get_next_sequential_node(flow_context, current_node_id)

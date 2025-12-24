@@ -3,7 +3,7 @@ Regenerate Document Controller.
 """
 
 from flask import request, jsonify, g
-from app.models import GeneratedDocument, WorkflowNode
+from app.models import GeneratedDocument
 from app.services.document_generation import DocumentGenerator
 from app.services.workflow_executor import WorkflowExecutor
 from app.routes.google_drive_routes import get_google_credentials
@@ -12,7 +12,6 @@ import logging
 import uuid
 
 logger = logging.getLogger(__name__)
-
 
 def regenerate_document(document_id: str):
     """Regenera um documento existente"""

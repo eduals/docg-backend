@@ -4,8 +4,9 @@ Serviço para gerenciar retomada de execuções de workflow após aprovação.
 import logging
 from datetime import datetime
 from app.database import db
-from app.models import WorkflowApproval, WorkflowExecution, WorkflowNode
+from app.models import WorkflowApproval, WorkflowExecution
 from app.services.workflow_executor import WorkflowExecutor, ExecutionContext
+from app.engine.flow.normalization import normalize_nodes_from_jsonb
 
 logger = logging.getLogger(__name__)
 
@@ -39,45 +40,59 @@ def resume_workflow_execution(approval: WorkflowApproval):
     
     # Restaurar documentos gerados
     context.generated_documents = execution_context_data.get('generated_documents', [])
-    
+
+    # Buscar nodes do JSONB
+    nodes = normalize_nodes_from_jsonb(workflow.nodes or [], workflow.edges or [])
+
     # Buscar node atual (o node de human-in-loop)
-    current_node = WorkflowNode.query.get(approval.node_id)
+    current_node = None
+    current_position = 0
+    for node in nodes:
+        if node.get('id') == approval.node_id:
+            current_node = node
+            current_position = node.get('position', 0)
+            break
+
     if not current_node:
         raise ValueError(f'Node não encontrado: {approval.node_id}')
-    
+
     # Buscar próximo node
-    next_node = WorkflowNode.query.filter_by(
-        workflow_id=workflow.id,
-        position=current_node.position + 1
-    ).first()
-    
+    next_node = None
+    for node in nodes:
+        if node.get('position', 0) == current_position + 1:
+            next_node = node
+            break
+
     if not next_node:
         # Não há próximo node, marcar execução como concluída
         execution.status = 'completed'
         db.session.commit()
         logger.info(f'Execução {execution.id} concluída após aprovação')
         return
-    
+
     # Continuar execução a partir do próximo node
     executor = WorkflowExecutor()
-    
+
     try:
-        # Executar nodes restantes
-        nodes_to_execute = WorkflowNode.query.filter(
-            WorkflowNode.workflow_id == workflow.id,
-            WorkflowNode.position > current_node.position
-        ).order_by(WorkflowNode.position).all()
-        
+        # Executar nodes restantes (nodes com position > current_position)
+        nodes_to_execute = [
+            n for n in nodes
+            if n.get('position', 0) > current_position
+        ]
+
         for node in nodes_to_execute:
-            if not node.is_configured():
-                logger.warning(f'Node {node.id} não configurado, pulando')
+            # Verificar se node está configurado (tem config não vazio)
+            config = node.get('config', {})
+            if not config:
+                logger.warning(f'Node {node.get("id")} não configurado, pulando')
                 continue
-            
-            node_executor = executor.executors.get(node.node_type)
+
+            node_type = node.get('node_type')
+            node_executor = executor.executors.get(node_type)
             if not node_executor:
-                logger.warning(f'Executor não encontrado para node_type: {node.node_type}')
+                logger.warning(f'Executor não encontrado para node_type: {node_type}')
                 continue
-            
+
             context = node_executor.execute(node, context)
         
         # Marcar execução como concluída

@@ -25,7 +25,6 @@ SIGNATURE_PROVIDERS = [
     'certisign'
 ]
 
-
 @connections_bp.route('', methods=['GET'])
 @require_auth
 @require_org
@@ -45,7 +44,6 @@ def list_connections():
         'connections': [conn.to_dict() for conn in connections]
     })
 
-
 @connections_bp.route('/<connection_id>', methods=['GET'])
 @require_auth
 @require_org
@@ -57,7 +55,6 @@ def get_connection(connection_id):
     ).first_or_404()
     
     return jsonify(connection.to_dict(include_credentials=False))
-
 
 @connections_bp.route('', methods=['POST'])
 @require_auth
@@ -109,7 +106,6 @@ def create_connection():
         'success': True,
         'connection': connection.to_dict(include_credentials=False)
     }), 201
-
 
 @connections_bp.route('/test', methods=['POST'])
 @require_auth
@@ -181,7 +177,6 @@ def test_connection_before_save():
             'error': str(e)
         }), 500
 
-
 @connections_bp.route('/<connection_id>', methods=['PUT'])
 @require_auth
 @require_org
@@ -215,7 +210,6 @@ def update_connection(connection_id):
         'success': True,
         'connection': connection.to_dict(include_credentials=False)
     })
-
 
 @connections_bp.route('/<connection_id>/test', methods=['POST'])
 @require_auth
@@ -264,7 +258,6 @@ def test_connection(connection_id):
             'error': str(e)
         }), 500
 
-
 @connections_bp.route('/<connection_id>', methods=['DELETE'])
 @require_auth
 @require_org
@@ -286,7 +279,6 @@ def delete_connection(connection_id):
     db.session.commit()
     
     return jsonify({'success': True})
-
 
 # ==================== AI CONNECTION ENDPOINTS ====================
 
@@ -357,7 +349,6 @@ def create_ai_connection():
         'connection': connection.to_dict(include_credentials=False)
     }), 201
 
-
 @connections_bp.route('/ai', methods=['GET'])
 @flexible_hubspot_auth
 @require_auth
@@ -374,7 +365,6 @@ def list_ai_connections():
         'connections': [conn.to_dict(include_credentials=False) for conn in connections]
     })
 
-
 @connections_bp.route('/ai/<connection_id>', methods=['GET'])
 @flexible_hubspot_auth
 @require_auth
@@ -390,7 +380,6 @@ def get_ai_connection(connection_id):
     connection = query.first_or_404()
     
     return jsonify(connection.to_dict(include_credentials=False))
-
 
 @connections_bp.route('/ai/<connection_id>', methods=['PATCH'])
 @flexible_hubspot_auth
@@ -432,7 +421,6 @@ def update_ai_connection(connection_id):
         'connection': connection.to_dict(include_credentials=False)
     })
 
-
 @connections_bp.route('/ai/<connection_id>', methods=['DELETE'])
 @flexible_hubspot_auth
 @require_auth
@@ -449,7 +437,7 @@ def delete_ai_connection(connection_id):
     connection = query.first_or_404()
     
     # Verificar se tem mapeamentos usando
-    from app.models import AIGenerationMapping
+    # Model removed during JSONB migration
     mappings_count = AIGenerationMapping.query.filter_by(
         ai_connection_id=connection_id
     ).count()
@@ -463,7 +451,6 @@ def delete_ai_connection(connection_id):
     db.session.commit()
     
     return jsonify({'success': True})
-
 
 @connections_bp.route('/ai/<connection_id>/test', methods=['POST'])
 @flexible_hubspot_auth
@@ -530,7 +517,6 @@ def test_ai_connection(connection_id):
             'provider': connection.source_type,
             'message': str(e)
         }), 500
-
 
 # ==================== SIGNATURE CONNECTION ENDPOINTS ====================
 
@@ -601,7 +587,6 @@ def create_signature_connection():
         'connection': connection.to_dict(include_credentials=False)
     }), 201
 
-
 @connections_bp.route('/signature', methods=['GET'])
 @flexible_hubspot_auth
 @require_auth
@@ -616,7 +601,6 @@ def list_signature_connections():
     return jsonify({
         'connections': [conn.to_dict(include_credentials=False) for conn in connections]
     })
-
 
 @connections_bp.route('/signature/<connection_id>', methods=['GET'])
 @flexible_hubspot_auth
@@ -633,7 +617,6 @@ def get_signature_connection(connection_id):
     connection = query.first_or_404()
     
     return jsonify(connection.to_dict(include_credentials=False))
-
 
 @connections_bp.route('/signature/<connection_id>', methods=['PATCH'])
 @flexible_hubspot_auth
@@ -675,7 +658,6 @@ def update_signature_connection(connection_id):
         'connection': connection.to_dict(include_credentials=False)
     })
 
-
 @connections_bp.route('/signature/<connection_id>', methods=['DELETE'])
 @flexible_hubspot_auth
 @require_auth
@@ -707,7 +689,6 @@ def delete_signature_connection(connection_id):
     db.session.commit()
     
     return jsonify({'success': True})
-
 
 @connections_bp.route('/signature/<connection_id>/test', methods=['POST'])
 @flexible_hubspot_auth

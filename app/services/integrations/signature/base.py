@@ -339,7 +339,7 @@ class SignatureProviderAdapter(ABC):
             # Tentar inferir do workflow ou template
             if document.workflow:
                 # Verificar nodes do workflow para determinar storage
-                from app.models import WorkflowNode
+                # Model removed during JSONB migration
                 nodes = WorkflowNode.query.filter_by(
                     workflow_id=document.workflow_id
                 ).all()

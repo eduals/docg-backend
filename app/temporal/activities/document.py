@@ -8,7 +8,6 @@ from temporalio import activity
 
 logger = logging.getLogger(__name__)
 
-
 @activity.defn
 async def execute_document_node(data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -46,7 +45,7 @@ async def execute_document_node(data: Dict[str, Any]) -> Dict[str, Any]:
     from app.database import db
     from app.models import (
         GeneratedDocument, Template, Workflow, 
-        DataSourceConnection, WorkflowNode
+        DataSourceConnection
     )
     from app.services.document_generation.tag_processor import TagProcessor
     from flask import current_app
@@ -129,21 +128,23 @@ async def execute_document_node(data: Dict[str, Any]) -> Dict[str, Any]:
             if template_tag and source_field:
                 mappings[template_tag] = source_field
         
-        # Processar AI mappings se houver
+        # Processar AI mappings se houver (agora vem do node.config)
         ai_replacements = {}
-        ai_mappings = list(workflow.ai_mappings)
-        if ai_mappings:
+        ai_mappings_config = config.get('ai_mappings', [])
+        if ai_mappings_config:
             try:
                 from app.services.document_generation.generator import DocumentGenerator, AIGenerationMetrics
                 from app.routes.google_drive_routes import get_google_credentials
-                
+
                 google_creds = get_google_credentials(workflow.organization_id)
                 if google_creds:
                     ai_metrics = AIGenerationMetrics()
                     generator = DocumentGenerator(google_creds)
-                    ai_replacements = generator._process_ai_tags(
-                        workflow=workflow,
+                    # Processar AI tags usando config do node
+                    ai_replacements = generator._process_ai_tags_from_config(
+                        ai_mappings=ai_mappings_config,
                         source_data=data['source_data'],
+                        workflow=workflow,
                         metrics=ai_metrics
                     )
                     activity.logger.info(f'AI tags processadas: {len(ai_replacements)} substituições')
@@ -179,7 +180,6 @@ async def execute_document_node(data: Dict[str, Any]) -> Dict[str, Any]:
         
         activity.logger.info(f"Documento gerado: {result['document_id']}")
         return result
-
 
 async def _generate_uploaded_document(
     workflow, template, config, doc_name, combined_data, mappings, data
@@ -389,7 +389,6 @@ async def _generate_uploaded_document(
         'reused': False
     }
 
-
 async def _generate_google_docs(
     workflow, template, config, doc_name, combined_data, mappings, data
 ) -> Dict[str, Any]:
@@ -462,7 +461,6 @@ async def _generate_google_docs(
         'pdf_url': pdf_result['url'] if pdf_result else None,
         'reused': False
     }
-
 
 async def _generate_google_slides(
     workflow, template, config, doc_name, combined_data, mappings, data
@@ -538,7 +536,6 @@ async def _generate_google_slides(
         'pdf_url': pdf_result['url'] if pdf_result else None,
         'reused': False
     }
-
 
 async def _generate_microsoft_word(
     workflow, template, config, doc_name, combined_data, mappings, data
@@ -653,7 +650,6 @@ async def _generate_microsoft_word(
         'pdf_url': pdf_result['url'] if pdf_result else None,
         'reused': False
     }
-
 
 async def _generate_microsoft_powerpoint(
     workflow, template, config, doc_name, combined_data, mappings, data

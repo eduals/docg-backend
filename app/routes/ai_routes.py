@@ -6,7 +6,7 @@ Fornece endpoints para listar provedores e modelos disponíveis.
 
 from flask import Blueprint, jsonify, request, g
 from app.database import db
-from app.models import AIGenerationMapping, Workflow, DataSourceConnection
+from app.models import Workflow, DataSourceConnection
 from app.utils.auth import require_auth, require_org
 from app.services.ai.utils import (
     get_available_providers,
@@ -160,68 +160,80 @@ def list_ai_tags():
         workflows_query = workflows_query.filter_by(id=workflow_id)
     
     workflows = workflows_query.all()
-    workflow_ids = [w.id for w in workflows]
-    
-    if not workflow_ids:
+
+    if not workflows:
         return jsonify({
             'ai_tags': [],
             'total': 0,
             'pages': 0,
             'current_page': page
         })
-    
-    # Construir query base para AI mappings
-    query = AIGenerationMapping.query.filter(
-        AIGenerationMapping.workflow_id.in_(workflow_ids)
-    )
-    
-    # Aplicar filtros
-    if provider:
-        query = query.filter_by(provider=provider.lower())
-    
-    if search:
-        query = query.filter(AIGenerationMapping.ai_tag.ilike(f'%{search}%'))
-    
-    # Ordenar por data de criação (mais recente primeiro)
-    query = query.order_by(AIGenerationMapping.created_at.desc())
-    
-    # Paginar
-    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
-    
-    # Construir resposta com dados relacionados
-    ai_tags = []
-    for mapping in pagination.items:
-        tag_dict = mapping.to_dict()
-        
-        # Buscar workflow relacionado
-        workflow = Workflow.query.get(mapping.workflow_id)
-        if workflow:
-            tag_dict['workflow'] = {
-                'id': str(workflow.id),
-                'name': workflow.name
-            }
-        else:
-            tag_dict['workflow'] = None
-        
-        # Buscar conexão AI relacionada
-        if mapping.ai_connection_id:
-            connection = DataSourceConnection.query.get(mapping.ai_connection_id)
+
+    # Extrair AI mappings do JSONB de todos os workflows
+    all_ai_mappings = []
+    for workflow in workflows:
+        nodes = workflow.nodes or []
+        for node in nodes:
+            node_data = node.get('data', {})
+            node_config = node_data.get('config', {})
+            ai_mappings = node_config.get('ai_mappings', [])
+
+            # Adicionar cada AI mapping com metadados
+            for mapping in ai_mappings:
+                # Aplicar filtros
+                if provider and mapping.get('provider', '').lower() != provider.lower():
+                    continue
+
+                if search and search.lower() not in mapping.get('ai_tag', '').lower():
+                    continue
+
+                all_ai_mappings.append({
+                    'ai_tag': mapping.get('ai_tag'),
+                    'provider': mapping.get('provider'),
+                    'model': mapping.get('model'),
+                    'prompt_template': mapping.get('prompt_template'),
+                    'temperature': mapping.get('temperature', 0.7),
+                    'max_tokens': mapping.get('max_tokens', 1000),
+                    'source_fields': mapping.get('source_fields', []),
+                    'ai_connection_id': mapping.get('ai_connection_id'),
+                    'fallback_value': mapping.get('fallback_value'),
+                    'workflow': {
+                        'id': str(workflow.id),
+                        'name': workflow.name
+                    },
+                    'node_id': node.get('id'),
+                    'node_type': node_data.get('type')
+                })
+
+    # Ordenar por provider, model, ai_tag (simulando order by created_at)
+    all_ai_mappings.sort(key=lambda x: (x.get('provider', ''), x.get('model', ''), x.get('ai_tag', '')))
+
+    # Paginar manualmente
+    total = len(all_ai_mappings)
+    start = (page - 1) * per_page
+    end = start + per_page
+    paginated_mappings = all_ai_mappings[start:end]
+
+    # Adicionar informações de conexão AI
+    for mapping in paginated_mappings:
+        if mapping.get('ai_connection_id'):
+            connection = DataSourceConnection.query.get(mapping['ai_connection_id'])
             if connection:
-                tag_dict['ai_connection'] = {
+                mapping['ai_connection'] = {
                     'id': str(connection.id),
                     'name': connection.name or f'{connection.source_type} Connection'
                 }
             else:
-                tag_dict['ai_connection'] = None
+                mapping['ai_connection'] = None
         else:
-            tag_dict['ai_connection'] = None
-        
-        ai_tags.append(tag_dict)
-    
+            mapping['ai_connection'] = None
+
+    pages = (total + per_page - 1) // per_page if total > 0 else 0
+
     return jsonify({
-        'ai_tags': ai_tags,
-        'total': pagination.total,
-        'pages': pagination.pages,
+        'ai_tags': paginated_mappings,
+        'total': total,
+        'pages': pages,
         'current_page': page
     })
 

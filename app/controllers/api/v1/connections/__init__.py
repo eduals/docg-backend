@@ -17,7 +17,7 @@ from .ai import (
     get_ai_connection,
     create_ai_connection,
     update_ai_connection,
-    delete_ai_connection,
+    # delete_ai_connection,  # DELETED during JSONB migration
     test_ai_connection,
 )
 
@@ -44,7 +44,7 @@ __all__ = [
     'get_ai_connection',
     'create_ai_connection',
     'update_ai_connection',
-    'delete_ai_connection',
+    # 'delete_ai_connection',  # DELETED during JSONB migration
     'test_ai_connection',
     # Signature connections
     'list_signature_connections',

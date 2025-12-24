@@ -16,7 +16,7 @@ class WorkflowApproval(db.Model):
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workflow_execution_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflow_executions.id', ondelete='CASCADE'), nullable=False)
     workflow_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflows.id', ondelete='CASCADE'), nullable=False)
-    node_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflow_nodes.id', ondelete='CASCADE'), nullable=False)
+    node_id = db.Column(db.String(255), nullable=False)  # ID do node no workflow.nodes JSONB
     
     # Snapshot do ExecutionContext no momento da pausa
     execution_context = db.Column(JSONB)
@@ -46,7 +46,6 @@ class WorkflowApproval(db.Model):
     # Relationships
     workflow_execution = db.relationship('WorkflowExecution', backref='approvals', foreign_keys=[workflow_execution_id])
     workflow = db.relationship('Workflow', backref='approvals', foreign_keys=[workflow_id])
-    node = db.relationship('WorkflowNode', backref='approvals', foreign_keys=[node_id])
     
     # Índices
     __table_args__ = (

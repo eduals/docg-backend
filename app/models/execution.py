@@ -4,7 +4,6 @@ from enum import Enum
 from app.database import db
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
-
 class ExecutionStatus(str, Enum):
     """
     Estados possíveis de uma execução de workflow.
@@ -31,7 +30,6 @@ class ExecutionStatus(str, Enum):
     CANCELED = 'canceled'       # Cancelado pelo usuário
     PAUSED = 'paused'           # Pausado manualmente
 
-
 class ConcurrentExecutionError(Exception):
     """Raised when trying to start a workflow that is already running"""
     def __init__(self, workflow_id: str, execution_id: str = None):
@@ -41,7 +39,6 @@ class ConcurrentExecutionError(Exception):
         if execution_id:
             message += f" (execution: {execution_id})"
         super().__init__(message)
-
 
 class WorkflowExecution(db.Model):
     __tablename__ = 'workflow_executions'
@@ -107,7 +104,7 @@ class WorkflowExecution(db.Model):
     # Run ID do Temporal (para debug/histórico)
     temporal_run_id = db.Column(db.String(255), nullable=True)
     # Node atual sendo executado
-    current_node_id = db.Column(UUID(as_uuid=True), db.ForeignKey('workflow_nodes.id', ondelete='SET NULL'), nullable=True)
+    current_node_id = db.Column(UUID(as_uuid=True), nullable=True)
     # Snapshot do ExecutionContext para retomada
     execution_context = db.Column(JSONB, nullable=True)
     # Logs por node: [{node_id, node_type, started_at, completed_at, duration_ms, status, output, error}]
@@ -142,7 +139,7 @@ class WorkflowExecution(db.Model):
 
     # Relationships
     generated_document = db.relationship('GeneratedDocument', foreign_keys=[generated_document_id])
-    current_node = db.relationship('WorkflowNode', foreign_keys=[current_node_id])
+    # current_node = db.relationship('WorkflowNode', foreign_keys=[current_node_id])  # REMOVED: WorkflowNode table dropado na migration JSONB
 
     @classmethod
     def check_concurrent_execution(cls, workflow_id: str) -> None:

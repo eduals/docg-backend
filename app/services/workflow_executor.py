@@ -8,8 +8,9 @@ import time
 import requests
 
 from app.database import db
-from app.models import Workflow, WorkflowNode, WorkflowExecution, GeneratedDocument
+from app.models import Workflow, WorkflowExecution, GeneratedDocument
 from app.services.data_sources.hubspot import HubSpotDataSource
+from app.engine.flow.normalization import normalize_nodes_from_jsonb
 
 logger = logging.getLogger(__name__)
 
@@ -58,15 +59,15 @@ class ExecutionContext:
 
 class NodeExecutor:
     """Classe base para executores de nodes"""
-    
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """
         Executa o node e atualiza o context.
-        
+
         Args:
-            node: Node a ser executado
+            node: Node dict (do JSONB) a ser executado
             context: Contexto de execução
-        
+
         Returns:
             Context atualizado
         """
@@ -75,19 +76,20 @@ class NodeExecutor:
 
 class TriggerNodeExecutor(NodeExecutor):
     """Executor para trigger nodes"""
-    
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Extrai dados baseado na configuração do trigger"""
-        config = node.config or {}
-        
+        config = node.get('config', {})
+
         # Determinar tipo de trigger baseado no node_type
-        if node.node_type == 'webhook':
+        node_type = node.get('node_type')
+        if node_type == 'webhook':
             trigger_type = 'webhook'
-        elif node.node_type == 'google-forms':
+        elif node_type == 'google-forms':
             trigger_type = 'google-forms'
-        elif node.node_type == 'hubspot':
+        elif node_type == 'hubspot':
             trigger_type = 'hubspot'
-        elif node.node_type == 'trigger':
+        elif node_type == 'trigger':
             # Compatibilidade: usar config.trigger_type
             trigger_type = config.get('trigger_type', 'hubspot')
         else:
@@ -99,7 +101,7 @@ class TriggerNodeExecutor(NodeExecutor):
             # Apenas validar que existem
             if not context.source_data:
                 raise ValueError('source_data não encontrado no context (webhook trigger)')
-            context.metadata['current_node_position'] = node.position
+            context.metadata['current_node_position'] = node.get('position', 0)
             logger.info(f"Webhook trigger node executado: dados recebidos do webhook")
             return context
         
@@ -138,24 +140,24 @@ class TriggerNodeExecutor(NodeExecutor):
                     source_data.update(properties)
             
             context.source_data = source_data
-            context.metadata['current_node_position'] = node.position
-            
+            context.metadata['current_node_position'] = node.get('position', 0)
+
             logger.info(f"HubSpot trigger node executado: extraídos dados de {source_object_type} {context.source_object_id}")
-            
+
             return context
 
 
 class GoogleDocsNodeExecutor(NodeExecutor):
     """Executor para Google Docs nodes"""
-    
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Gera documento no Google Docs"""
         from app.services.document_generation.generator import DocumentGenerator
         from app.routes.google_drive_routes import get_google_credentials
-        from app.models import Template, WorkflowFieldMapping, AIGenerationMapping
+        from app.models import Template
         import uuid
-        
-        config = node.config or {}
+
+        config = node.get('config', {})
         template_id = config.get('template_id')
         
         if not template_id:
@@ -271,7 +273,7 @@ class GoogleDocsNodeExecutor(NodeExecutor):
         
         # Adicionar ao context
         context.generated_documents.append({
-            'node_id': str(node.id),
+            'node_id': node['id'],
             'document_id': str(generated_doc.id),
             'google_doc_id': new_doc['id'],
             'google_doc_url': new_doc['url'],
@@ -279,7 +281,7 @@ class GoogleDocsNodeExecutor(NodeExecutor):
             'pdf_url': pdf_result['url'] if pdf_result else None
         })
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         
         logger.info(f"Google Docs node executado: documento {generated_doc.id} gerado")
         
@@ -289,14 +291,14 @@ class GoogleDocsNodeExecutor(NodeExecutor):
 class MicrosoftWordNodeExecutor(NodeExecutor):
     """Executor para Microsoft Word nodes"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Gera documento no Microsoft Word"""
         from app.services.document_generation.microsoft_word import MicrosoftWordService
         from app.models import Template, GeneratedDocument, DataSourceConnection
         from datetime import datetime
         from app.services.document_generation.tag_processor import TagProcessor
         
-        config = node.config or {}
+        config = node.get('config', {})
         template_id = config.get('template_id')
         connection_id = config.get('connection_id')
         
@@ -464,7 +466,7 @@ class MicrosoftWordNodeExecutor(NodeExecutor):
         
         # Adicionar ao context
         context.generated_documents.append({
-            'node_id': str(node.id),
+            'node_id': node['id'],
             'document_id': str(generated_doc.id),
             'microsoft_file_id': new_doc['id'],
             'microsoft_file_url': new_doc['url'],
@@ -472,7 +474,7 @@ class MicrosoftWordNodeExecutor(NodeExecutor):
             'pdf_url': pdf_result['url'] if pdf_result else None
         })
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         
         logger.info(f"Microsoft Word node executado: documento {generated_doc.id} gerado")
         
@@ -482,7 +484,7 @@ class MicrosoftWordNodeExecutor(NodeExecutor):
 class GoogleSlidesNodeExecutor(NodeExecutor):
     """Executor para Google Slides nodes"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Gera apresentação no Google Slides"""
         from app.services.document_generation.generator import DocumentGenerator
         from app.services.document_generation.google_slides import GoogleSlidesService
@@ -491,7 +493,7 @@ class GoogleSlidesNodeExecutor(NodeExecutor):
         from datetime import datetime
         from app.services.document_generation.tag_processor import TagProcessor
         
-        config = node.config or {}
+        config = node.get('config', {})
         template_id = config.get('template_id')
         
         if not template_id:
@@ -605,7 +607,7 @@ class GoogleSlidesNodeExecutor(NodeExecutor):
         
         # Adicionar ao context
         context.generated_documents.append({
-            'node_id': str(node.id),
+            'node_id': node['id'],
             'document_id': str(generated_doc.id),
             'google_slides_id': new_pres['id'],
             'google_slides_url': new_pres['url'],
@@ -613,7 +615,7 @@ class GoogleSlidesNodeExecutor(NodeExecutor):
             'pdf_url': pdf_result['url'] if pdf_result else None
         })
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         
         logger.info(f"Google Slides node executado: apresentação {generated_doc.id} gerada")
         
@@ -623,14 +625,14 @@ class GoogleSlidesNodeExecutor(NodeExecutor):
 class MicrosoftPowerPointNodeExecutor(NodeExecutor):
     """Executor para Microsoft PowerPoint nodes"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Gera apresentação no Microsoft PowerPoint"""
         from app.services.document_generation.microsoft_powerpoint import MicrosoftPowerPointService
         from app.models import Template, GeneratedDocument, DataSourceConnection
         from datetime import datetime
         from app.services.document_generation.tag_processor import TagProcessor
         
-        config = node.config or {}
+        config = node.get('config', {})
         template_id = config.get('template_id')
         connection_id = config.get('connection_id')
         
@@ -795,7 +797,7 @@ class MicrosoftPowerPointNodeExecutor(NodeExecutor):
         
         # Adicionar ao context
         context.generated_documents.append({
-            'node_id': str(node.id),
+            'node_id': node['id'],
             'document_id': str(generated_doc.id),
             'microsoft_file_id': new_pres['id'],
             'microsoft_file_url': new_pres['url'],
@@ -803,7 +805,7 @@ class MicrosoftPowerPointNodeExecutor(NodeExecutor):
             'pdf_url': pdf_result['url'] if pdf_result else None
         })
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         
         logger.info(f"Microsoft PowerPoint node executado: apresentação {generated_doc.id} gerada")
         
@@ -813,13 +815,13 @@ class MicrosoftPowerPointNodeExecutor(NodeExecutor):
 class GmailEmailNodeExecutor(NodeExecutor):
     """Executor para Gmail email nodes"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Envia email via Gmail SMTP"""
         from app.services.email_service import EmailService
         from app.models import DataSourceConnection, GeneratedDocument
         from app.services.document_generation.tag_processor import TagProcessor
         
-        config = node.config or {}
+        config = node.get('config', {})
         connection_id = config.get('connection_id')
         
         if not connection_id:
@@ -945,7 +947,7 @@ class GmailEmailNodeExecutor(NodeExecutor):
             attachments=attachments if attachments else None
         )
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         logger.info(f"Gmail email node executado: email enviado para {to_processed}")
         
         return context
@@ -954,14 +956,14 @@ class GmailEmailNodeExecutor(NodeExecutor):
 class OutlookEmailNodeExecutor(NodeExecutor):
     """Executor para Outlook email nodes"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Envia email via Outlook (Microsoft Graph API)"""
         from app.services.email_service import EmailService
         from app.models import DataSourceConnection, GeneratedDocument
         from app.services.document_generation.tag_processor import TagProcessor
         from datetime import datetime
         
-        config = node.config or {}
+        config = node.get('config', {})
         connection_id = config.get('connection_id')
         
         if not connection_id:
@@ -1092,7 +1094,7 @@ class OutlookEmailNodeExecutor(NodeExecutor):
             attachments=attachments if attachments else None
         )
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         logger.info(f"Outlook email node executado: email enviado para {to_processed}")
         
         return context
@@ -1101,13 +1103,13 @@ class OutlookEmailNodeExecutor(NodeExecutor):
 class HumanInLoopNodeExecutor(NodeExecutor):
     """Executor para Human-in-the-Loop nodes (aprovação)"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Pausa execução e cria aprovação"""
         from app.models import WorkflowApproval, WorkflowExecution
         from datetime import datetime, timedelta
         import secrets
         
-        config = node.config or {}
+        config = node.get('config', {})
         approver_emails = config.get('approver_emails', [])
         message_template = config.get('message_template', 'Por favor, revise os documentos gerados e aprove ou rejeite.')
         timeout_hours = config.get('timeout_hours', 48)
@@ -1150,7 +1152,7 @@ class HumanInLoopNodeExecutor(NodeExecutor):
             approval = WorkflowApproval(
                 workflow_execution_id=execution.id,
                 workflow_id=context.workflow_id,
-                node_id=node.id,
+                node_id=node.get('id'),
                 execution_context={
                     'source_object_id': context.source_object_id,
                     'source_object_type': context.source_object_type,
@@ -1227,7 +1229,7 @@ class HumanInLoopNodeExecutor(NodeExecutor):
         
         # Não continuar para próximo node (execução pausada)
         # A execução será retomada quando a aprovação for aprovada/rejeitada
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         context.metadata['paused'] = True
         context.metadata['approval_ids'] = [str(a.id) for a in approvals]
         
@@ -1239,9 +1241,9 @@ class HumanInLoopNodeExecutor(NodeExecutor):
 class SignatureNodeExecutor(NodeExecutor):
     """Executor genérico para nodes de assinatura"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Executa node de assinatura usando adapter do provider"""
-        config = node.config or {}
+        config = node.get('config', {})
         provider = config.get('provider', 'clicksign')  # Default para compatibilidade
         connection_id = config.get('connection_id')
         recipients = config.get('recipients', [])
@@ -1290,7 +1292,7 @@ class SignatureNodeExecutor(NodeExecutor):
             'external_url': signature_request.external_url
         })
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         
         logger.info(
             f"Signature node executado: documento {document.id} enviado para assinatura "
@@ -1361,11 +1363,11 @@ class ClicksignNodeExecutor(SignatureNodeExecutor):
 class WebhookNodeExecutor(NodeExecutor):
     """Executor para Webhook nodes"""
     
-    def execute(self, node: WorkflowNode, context: ExecutionContext) -> ExecutionContext:
+    def execute(self, node: Dict[str, Any], context: ExecutionContext) -> ExecutionContext:
         """Chama webhook com dados do context"""
         import requests
         
-        config = node.config or {}
+        config = node.get('config', {})
         url = config.get('url')
         method = config.get('method', 'POST').upper()
         headers = config.get('headers', {})
@@ -1402,7 +1404,7 @@ class WebhookNodeExecutor(NodeExecutor):
             logger.error(f"Erro ao chamar webhook {url}: {str(e)}")
             raise
         
-        context.metadata['current_node_position'] = node.position
+        context.metadata['current_node_position'] = node.get('position', 0)
         
         return context
 
@@ -1498,11 +1500,12 @@ class WorkflowExecutor:
         start_time = datetime.utcnow()
         
         try:
-            # Buscar nodes ordenados por position
-            nodes = WorkflowNode.query.filter_by(
-                workflow_id=workflow.id
-            ).order_by(WorkflowNode.position).all()
-            
+            # Buscar nodes do JSONB e normalizar
+            nodes = normalize_nodes_from_jsonb(
+                workflow.nodes or [],
+                workflow.edges or []
+            )
+
             if not nodes:
                 raise ValueError('Workflow não possui nodes configurados')
             
@@ -1517,18 +1520,18 @@ class WorkflowExecutor:
             # Processar cada node sequencialmente
             for node in nodes:
                 try:
-                    executor = self.executors.get(node.node_type)
+                    executor = self.executors.get(node.get('node_type'))
                     if not executor:
-                        raise ValueError(f'Executor não encontrado para node_type: {node.node_type}')
+                        raise ValueError(f'Executor não encontrado para node_type: {node.get('node_type')}')
                     
                     context = executor.execute(node, context)
                     
                 except Exception as e:
                     # Registrar erro mas continuar (ou parar, dependendo da configuração)
-                    context.add_error(str(node.id), node.node_type, str(e))
-                    logger.error(f"Erro ao executar node {node.id} ({node.node_type}): {str(e)}")
+                    context.add_error(node['id'], node.get('node_type'), str(e))
+                    logger.error(f"Erro ao executar node {node.get('id')} ({node.get('node_type')}): {str(e)}")
                     # Para erros críticos, interromper execução
-                    if node.node_type in ['hubspot', 'webhook', 'google-forms', 'trigger', 'google-docs']:
+                    if node.get('node_type') in ['hubspot', 'webhook', 'google-forms', 'trigger', 'google-docs']:
                         raise
             
             # Atualizar execução com resultado

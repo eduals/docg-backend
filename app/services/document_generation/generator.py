@@ -5,9 +5,8 @@ import time
 
 from app.database import db
 from app.models import (
-    Workflow, GeneratedDocument, Template, 
-    WorkflowFieldMapping, Organization, WorkflowExecution,
-    AIGenerationMapping
+    Workflow, GeneratedDocument, Template,
+    Organization, WorkflowExecution
 )
 from app.utils.encryption import decrypt_credentials
 from .google_docs import GoogleDocsService
@@ -27,11 +26,16 @@ class AIGenerationMetrics:
         self.successful = 0
         self.failed = 0
     
-    def add_success(self, mapping: 'AIGenerationMapping', time_ms: float, tokens: int = 0, cost: float = 0.0):
+    def add_success(self, mapping: Any, time_ms: float, tokens: int = 0, cost: float = 0.0):
+        """Add successful AI generation metrics. mapping can be dict or object with ai_tag, provider, model attributes."""
+        ai_tag = mapping.ai_tag if hasattr(mapping, 'ai_tag') else mapping.get('ai_tag', 'unknown')
+        provider = mapping.provider if hasattr(mapping, 'provider') else mapping.get('provider', 'unknown')
+        model = mapping.model if hasattr(mapping, 'model') else mapping.get('model', 'unknown')
+
         self.details.append({
-            'tag': mapping.ai_tag,
-            'provider': mapping.provider,
-            'model': mapping.model,
+            'tag': ai_tag,
+            'provider': provider,
+            'model': model,
             'time_ms': round(time_ms),
             'tokens': tokens,
             'cost_usd': cost,
@@ -41,12 +45,17 @@ class AIGenerationMetrics:
         self.total_tokens += tokens
         self.total_cost += cost
         self.successful += 1
-    
-    def add_failure(self, mapping: 'AIGenerationMapping', error: str, time_ms: float = 0):
+
+    def add_failure(self, mapping: Any, error: str, time_ms: float = 0):
+        """Add failed AI generation metrics. mapping can be dict or object with ai_tag, provider, model attributes."""
+        ai_tag = mapping.ai_tag if hasattr(mapping, 'ai_tag') else mapping.get('ai_tag', 'unknown')
+        provider = mapping.provider if hasattr(mapping, 'provider') else mapping.get('provider', 'unknown')
+        model = mapping.model if hasattr(mapping, 'model') else mapping.get('model', 'unknown')
+
         self.details.append({
-            'tag': mapping.ai_tag,
-            'provider': mapping.provider,
-            'model': mapping.model,
+            'tag': ai_tag,
+            'provider': provider,
+            'model': model,
             'time_ms': round(time_ms),
             'status': 'failed',
             'error': error
@@ -471,21 +480,173 @@ class DocumentGenerator:
                 ai_logger.error(f"[AI] Erro inesperado na tag '{mapping.ai_tag}': {e}")
         
         return replacements
-    
-    def _get_ai_api_key(self, mapping: AIGenerationMapping) -> Optional[str]:
+
+    def _process_ai_tags_from_config(
+        self,
+        ai_mappings: List[Dict[str, Any]],
+        source_data: Dict[str, Any],
+        workflow: Workflow,
+        metrics: AIGenerationMetrics
+    ) -> Dict[str, str]:
         """
-        Obtém a API key descriptografada para a conexão de IA.
-        
+        Processa tags AI a partir de configuração (node.config.ai_mappings).
+
         Args:
-            mapping: Mapeamento de IA com referência à conexão
-        
+            ai_mappings: Lista de dicts com configuração de AI mappings
+            source_data: Dados da fonte para montar prompts
+            workflow: Workflow (para buscar connections)
+            metrics: Objeto para rastrear métricas
+
+        Returns:
+            Dicionário com {ai:tag_name: texto_gerado}
+        """
+        from app.services.ai import LLMService, AIGenerationError, AITimeoutError, AIQuotaExceededError, AIInvalidKeyError
+        from app.services.ai.utils import get_model_string
+
+        replacements = {}
+
+        if not ai_mappings:
+            return replacements
+
+        ai_logger.info(f"[AI] Processando {len(ai_mappings)} tags AI (from config) para workflow {workflow.id}")
+
+        for mapping_config in ai_mappings:
+            start_time = time.time()
+            tag_name = mapping_config.get('ai_tag')
+            tag_key = f"ai:{tag_name}"
+
+            try:
+                # Buscar API key da conexão
+                api_key = self._get_ai_api_key_from_config(mapping_config, workflow.organization_id)
+                if not api_key:
+                    raise AIInvalidKeyError(
+                        "Conexão de IA não configurada ou API key não encontrada",
+                        mapping_config.get('provider'),
+                        mapping_config.get('model')
+                    )
+
+                # Montar prompt
+                prompt = TagProcessor.build_ai_prompt(
+                    prompt_template=mapping_config.get('prompt_template', ''),
+                    source_data=source_data,
+                    source_fields=mapping_config.get('source_fields', [])
+                )
+
+                # Gerar texto
+                provider = mapping_config.get('provider')
+                model = mapping_config.get('model')
+                model_string = get_model_string(provider, model)
+                response = self.llm_service.generate_text(
+                    model=model_string,
+                    prompt=prompt,
+                    api_key=api_key,
+                    temperature=mapping_config.get('temperature', 0.7),
+                    max_tokens=mapping_config.get('max_tokens', 1000),
+                    timeout=60
+                )
+
+                # Salvar resultado
+                replacements[tag_key] = response.text
+                elapsed_ms = (time.time() - start_time) * 1000
+
+                # Atualizar métricas (criar objeto temporário compatível)
+                class TempMapping:
+                    def __init__(self, config):
+                        self.ai_tag = config.get('ai_tag')
+                        self.provider = config.get('provider')
+                        self.model = config.get('model')
+                        self.source_fields = config.get('source_fields', [])
+
+                temp_mapping = TempMapping(mapping_config)
+                metrics.add_success(
+                    mapping=temp_mapping,
+                    time_ms=elapsed_ms,
+                    tokens=response.total_tokens,
+                    cost=response.estimated_cost_usd
+                )
+
+                ai_logger.info(
+                    f"[AI] Tag '{tag_name}' gerada - "
+                    f"tokens={response.total_tokens}, time_ms={elapsed_ms:.0f}"
+                )
+
+            except (AIQuotaExceededError, AIInvalidKeyError) as e:
+                elapsed_ms = (time.time() - start_time) * 1000
+                fallback = mapping_config.get('fallback_value', f"[Erro: {tag_name}]")
+                replacements[tag_key] = fallback
+                ai_logger.error(f"[AI] Erro crítico na tag '{tag_name}': {e}")
+                raise
+
+            except AITimeoutError as e:
+                elapsed_ms = (time.time() - start_time) * 1000
+                fallback = mapping_config.get('fallback_value', f"[Timeout: {tag_name}]")
+                replacements[tag_key] = fallback
+                ai_logger.warning(f"[AI] Timeout na tag '{tag_name}', usando fallback")
+
+            except AIGenerationError as e:
+                elapsed_ms = (time.time() - start_time) * 1000
+                fallback = mapping_config.get('fallback_value', f"[Erro: {tag_name}]")
+                replacements[tag_key] = fallback
+                ai_logger.warning(f"[AI] Erro na tag '{tag_name}': {e}")
+
+            except Exception as e:
+                elapsed_ms = (time.time() - start_time) * 1000
+                fallback = mapping_config.get('fallback_value', f"[Erro: {tag_name}]")
+                replacements[tag_key] = fallback
+                ai_logger.error(f"[AI] Erro inesperado na tag '{tag_name}': {e}")
+
+        return replacements
+
+    def _get_ai_api_key_from_config(self, mapping_config: Dict[str, Any], organization_id: str) -> Optional[str]:
+        """
+        Obtém API key descriptografada da conexão de IA a partir de config.
+
+        Args:
+            mapping_config: Dict com ai_connection_id
+            organization_id: ID da organização
+
         Returns:
             API key descriptografada ou None
         """
-        if not mapping.ai_connection_id:
+        from app.models import DataSourceConnection
+        from app.utils.encryption import decrypt_config
+
+        ai_connection_id = mapping_config.get('ai_connection_id')
+        if not ai_connection_id:
             return None
-        
-        connection = mapping.ai_connection
+
+        connection = DataSourceConnection.query.filter_by(
+            id=ai_connection_id,
+            organization_id=organization_id
+        ).first()
+
+        if not connection:
+            return None
+
+        decrypted_config = decrypt_config(connection.config)
+        return decrypted_config.get('api_key')
+
+    def _get_ai_api_key(self, mapping: Any) -> Optional[str]:
+        """
+        DEPRECATED: Use _get_ai_api_key_from_config() instead.
+
+        Obtém a API key descriptografada para a conexão de IA.
+
+        Args:
+            mapping: Mapeamento de IA (dict ou object) com referência à conexão
+
+        Returns:
+            API key descriptografada ou None
+        """
+        # Suportar tanto dict quanto object
+        ai_connection_id = mapping.ai_connection_id if hasattr(mapping, 'ai_connection_id') else mapping.get('ai_connection_id')
+
+        if not ai_connection_id:
+            return None
+
+        # Buscar connection manualmente (não há relacionamento no dict)
+        from app.models import DataSourceConnection
+        connection = DataSourceConnection.query.get(ai_connection_id)
         if not connection:
             return None
         

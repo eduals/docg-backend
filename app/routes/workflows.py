@@ -1,10 +1,12 @@
 from flask import Blueprint, request, jsonify, g, current_app
 from app.database import db
-from app.models import Workflow, WorkflowFieldMapping, Template, AIGenerationMapping, DataSourceConnection, WorkflowNode, WorkflowExecution, Organization
+from app.models import Workflow, Template, DataSourceConnection, WorkflowExecution, Organization
 from app.models.workflow import TRIGGER_NODE_TYPES
 from app.utils.auth import require_auth, require_org, require_admin
 from app.utils.hubspot_auth import flexible_hubspot_auth
+from app.engine.flow.normalization import normalize_nodes_from_jsonb
 from sqlalchemy.exc import IntegrityError
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -73,27 +75,21 @@ def list_workflows():
     if object_type:
         filtered_workflows = []
         for w in workflows:
-            trigger_node = WorkflowNode.query.filter_by(
-                workflow_id=w.id,
-                node_type='trigger'
-            ).first()
-            if trigger_node and trigger_node.config:
-                trigger_config = trigger_node.config or {}
+            nodes_data = normalize_nodes_from_jsonb(w.nodes or [], w.edges or [])
+            trigger_node = next((n for n in nodes_data if n.get('position') == 1), None)
+            if trigger_node and trigger_node.get('config'):
+                trigger_config = trigger_node.get('config', {})
                 if trigger_config.get('source_object_type') == object_type:
                     filtered_workflows.append(w)
         workflows = filtered_workflows
-    
+
     result = []
     for w in workflows:
         workflow_dict = workflow_to_dict(w)
-        # Adicionar contagem de nodes
-        nodes_count = WorkflowNode.query.filter_by(workflow_id=w.id).count()
-        nodes_configured = WorkflowNode.query.filter_by(
-            workflow_id=w.id,
-            status='configured'
-        ).count()
-        workflow_dict['nodes_count'] = nodes_count
-        workflow_dict['nodes_configured'] = nodes_configured
+        # Adicionar contagem de nodes do JSONB
+        nodes_data = normalize_nodes_from_jsonb(w.nodes or [], w.edges or [])
+        workflow_dict['nodes_count'] = len(nodes_data)
+        workflow_dict['nodes_configured'] = len([n for n in nodes_data if n.get('enabled', True)])
         result.append(workflow_dict)
     
     return jsonify({
@@ -113,18 +109,12 @@ def get_workflow(workflow_id):
         organization_id=g.organization_id
     ).first_or_404()
     
-    include_nodes = request.args.get('include_nodes', 'false').lower() == 'true'
-    include_mappings = request.args.get('include_mappings', 'false').lower() == 'true'
-    include_ai_mappings = request.args.get('include_ai_mappings', 'false').lower() == 'true'
-    
-    result = workflow_to_dict(workflow, include_mappings=include_mappings, include_ai_mappings=include_ai_mappings)
-    
-    if include_nodes:
-        nodes = WorkflowNode.query.filter_by(
-            workflow_id=workflow.id
-        ).order_by(WorkflowNode.position).all()
-        result['nodes'] = [node.to_dict(include_config=True) for node in nodes]
-    
+    result = workflow_to_dict(workflow)
+
+    # Incluir nodes/edges do JSONB (sempre incluir, pois é a estrutura principal)
+    result['nodes'] = workflow.nodes or []
+    result['edges'] = workflow.edges or []
+
     return jsonify(result)
 
 
@@ -172,59 +162,29 @@ def create_workflow():
             'error': f'Limite de workflows atingido ({current_count}/{limit}). Faça upgrade do plano para criar mais workflows.'
         }), 403
     
-    # Criar workflow (estrutura simplificada)
+    # Criar workflow
     workflow = Workflow(
         organization_id=g.organization_id,
         name=data['name'],
         description=data.get('description'),
-        post_actions=data.get('post_actions'),
+        nodes=data.get('nodes', []),
+        edges=data.get('edges', []),
+        visibility=data.get('visibility', 'private'),
         status='draft',
         created_by=data.get('user_id')
     )
     
     db.session.add(workflow)
-    db.session.flush()  # Para obter o ID
-    
-    # Criar trigger node automaticamente
-    # Determinar tipo de trigger baseado no que foi enviado
-    trigger_node_type = 'hubspot'  # Default
-    if data.get('trigger_type') == 'webhook':
-        trigger_node_type = 'webhook'
-    elif data.get('source_type') == 'google-forms':
-        trigger_node_type = 'google-forms'
-    
-    trigger_config = {
-        'source_connection_id': str(data.get('source_connection_id')) if data.get('source_connection_id') else None,
-        'source_object_type': data.get('source_object_type'),
-        'trigger_config': data.get('trigger_config', {}),
-        'field_mapping': data.get('field_mapping', {})  # Para webhook trigger
-    }
-    
-    trigger_node = WorkflowNode(
-        workflow_id=workflow.id,
-        node_type=trigger_node_type,  # Usar tipo específico, não 'trigger'
-        position=1,
-        parent_node_id=None,
-        config=trigger_config,
-        status='draft'
-    )
-    
-    # Se for webhook trigger, gerar token
-    if trigger_node_type == 'webhook':
-        trigger_node.generate_webhook_token()
-    
-    db.session.add(trigger_node)
-    
+
     # Incrementar contador de workflows
     if org:
         org.increment_workflow_count()
-    
+
     db.session.commit()
-    
+
     return jsonify({
         'success': True,
-        'workflow': workflow_to_dict(workflow, include_mappings=False),
-        'trigger_node': trigger_node.to_dict(include_config=True)
+        'workflow': workflow_to_dict(workflow)
     }), 201
 
 
@@ -249,38 +209,18 @@ def update_workflow(workflow_id):
             return jsonify({'error': error_msg}), 400
     
     # Atualizar campos permitidos
-    allowed_fields = [
-        'name', 'description', 'source_connection_id', 'source_object_type',
-        'source_config', 'template_id', 'output_folder_id', 'output_name_template',
-        'create_pdf', 'trigger_type', 'trigger_config', 'post_actions', 'status'
-    ]
-    
+    allowed_fields = ['name', 'description', 'nodes', 'edges', 'visibility', 'post_actions', 'status']
+
     for field in allowed_fields:
         if field in data:
             setattr(workflow, field, data[field])
-    
-    # Atualizar field mappings se fornecidos
-    if 'field_mappings' in data:
-        # Remove mapeamentos existentes
-        WorkflowFieldMapping.query.filter_by(workflow_id=workflow.id).delete()
-        
-        # Cria novos
-        for mapping_data in data['field_mappings']:
-            mapping = WorkflowFieldMapping(
-                workflow_id=workflow.id,
-                template_tag=mapping_data['template_tag'],
-                source_field=mapping_data['source_field'],
-                transform_type=mapping_data.get('transform_type'),
-                transform_config=mapping_data.get('transform_config'),
-                default_value=mapping_data.get('default_value')
-            )
-            db.session.add(mapping)
-    
+
+    workflow.updated_at = datetime.utcnow()
     db.session.commit()
-    
+
     return jsonify({
         'success': True,
-        'workflow': workflow_to_dict(workflow, include_mappings=True)
+        'workflow': workflow_to_dict(workflow)
     })
 
 
@@ -297,19 +237,8 @@ def delete_workflow(workflow_id):
     ).first_or_404()
     
     # Deletar execuções explicitamente antes de deletar o workflow
-    # Isso evita que o SQLAlchemy tente fazer UPDATE com workflow_id=NULL
     WorkflowExecution.query.filter_by(workflow_id=workflow.id).delete()
-    
-    # Deletar field mappings explicitamente
-    WorkflowFieldMapping.query.filter_by(workflow_id=workflow.id).delete()
-    
-    # Deletar AI mappings explicitamente
-    AIGenerationMapping.query.filter_by(workflow_id=workflow.id).delete()
-    
-    # Deletar nodes explicitamente antes de deletar o workflow
-    # Isso evita que o SQLAlchemy tente fazer UPDATE com workflow_id=NULL
-    WorkflowNode.query.filter_by(workflow_id=workflow.id).delete()
-    
+
     # Deletar o workflow
     db.session.delete(workflow)
     db.session.commit()
@@ -331,39 +260,25 @@ def activate_workflow(workflow_id):
         organization_id=g.organization_id
     ).first_or_404()
     
-    # Buscar nodes
-    nodes = WorkflowNode.query.filter_by(
-        workflow_id=workflow.id
-    ).order_by(WorkflowNode.position).all()
-    
-    # Validar que existe trigger node (qualquer tipo de trigger)
-    trigger_node = next((n for n in nodes if n.is_trigger()), None)
+    # Normalizar nodes do JSONB
+    nodes_data = normalize_nodes_from_jsonb(workflow.nodes or [], workflow.edges or [])
+
+    if not nodes_data:
+        return jsonify({'error': 'Workflow não possui nodes'}), 400
+
+    # Validar que existe trigger node (position = 1)
+    trigger_node = next((n for n in nodes_data if n.get('position') == 1), None)
     if not trigger_node:
-        return jsonify({'error': 'Workflow deve ter um trigger node (hubspot, webhook ou google-forms)'}), 400
-    
-    # Validar que trigger está configurado
-    if not trigger_node.is_configured():
-        return jsonify({'error': 'Trigger node não está configurado'}), 400
-    
-    # Validar que todos os nodes obrigatórios estão configurados
-    unconfigured_nodes = [n for n in nodes if not n.is_configured() and not n.is_trigger()]
-    if unconfigured_nodes:
-        return jsonify({
-            'error': f'{len(unconfigured_nodes)} node(s) não estão configurados',
-            'unconfigured_nodes': [str(n.id) for n in unconfigured_nodes]
-        }), 400
-    
-    # Validar cadeia de nodes (sem gaps)
-    positions = sorted([n.position for n in nodes])
-    expected_positions = list(range(1, len(nodes) + 1))
-    if positions != expected_positions:
-        return jsonify({
-            'error': 'Cadeia de nodes incompleta. Existem gaps nas posições.'
-        }), 400
-    
+        return jsonify({'error': 'Workflow deve ter um trigger node (position = 1)'}), 400
+
+    # Validar que todos os nodes obrigatórios estão habilitados
+    disabled_nodes = [n for n in nodes_data if not n.get('enabled', True)]
+    if len(disabled_nodes) == len(nodes_data):
+        return jsonify({'error': 'Todos os nodes estão desabilitados'}), 400
+
     workflow.status = 'active'
     db.session.commit()
-    
+
     return jsonify({
         'success': True,
         'workflow': workflow_to_dict(workflow)
@@ -421,877 +336,6 @@ def workflow_to_dict(workflow: Workflow, include_mappings: bool = False, include
     return result
 
 
-# ==================== AI MAPPING ENDPOINTS ====================
-
-@workflows_bp.route('/<workflow_id>/ai-mappings', methods=['GET'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-def list_ai_mappings(workflow_id):
-    """Lista mapeamentos de IA de um workflow"""
-    import uuid
-    
-    # Converter workflow_id para UUID se for string
-    workflow_id_uuid = uuid.UUID(workflow_id) if isinstance(workflow_id, str) else workflow_id
-    
-    # Converter organization_id para UUID se for string
-    org_id = uuid.UUID(g.organization_id) if isinstance(g.organization_id, str) else g.organization_id
-    
-    workflow = Workflow.query.filter_by(
-        id=workflow_id_uuid,
-        organization_id=org_id
-    ).first_or_404()
-    
-    mappings = AIGenerationMapping.query.filter_by(
-        workflow_id=workflow.id
-    ).order_by(AIGenerationMapping.created_at.desc()).all()
-    
-    return jsonify({
-        'ai_mappings': [m.to_dict() for m in mappings]
-    })
-
-
-@workflows_bp.route('/<workflow_id>/ai-mappings', methods=['POST'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def create_ai_mapping(workflow_id):
-    """
-    Cria um novo mapeamento de IA para o workflow.
-    
-    Body:
-    {
-        "ai_tag": "paragrapho1",
-        "source_fields": ["dealname", "amount", "company.name"],
-        "provider": "openai",
-        "model": "gpt-4",
-        "ai_connection_id": "uuid",
-        "prompt_template": "Gere um parágrafo descrevendo o deal {{dealname}}...",
-        "temperature": 0.7,
-        "max_tokens": 500,
-        "fallback_value": "[Texto não gerado]"
-    }
-    """
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    data = request.get_json()
-    
-    # Validações
-    required = ['ai_tag', 'provider', 'model']
-    for field in required:
-        if not data.get(field):
-            return jsonify({'error': f'{field} é obrigatório'}), 400
-    
-    # Validar provider
-    provider = data['provider'].lower()
-    if provider not in AI_PROVIDERS:
-        return jsonify({
-            'error': f'Provedor não suportado. Use: {", ".join(AI_PROVIDERS)}'
-        }), 400
-    
-    # Validar ai_connection_id se fornecido
-    ai_connection_id = data.get('ai_connection_id')
-    if ai_connection_id:
-        connection = DataSourceConnection.query.filter_by(
-            id=ai_connection_id,
-            organization_id=g.organization_id,
-            source_type=provider
-        ).first()
-        if not connection:
-            return jsonify({
-                'error': 'Conexão de IA não encontrada ou não corresponde ao provider'
-            }), 400
-    
-    # Verificar se tag já existe no workflow
-    existing = AIGenerationMapping.query.filter_by(
-        workflow_id=workflow.id,
-        ai_tag=data['ai_tag']
-    ).first()
-    
-    if existing:
-        return jsonify({
-            'error': f'Tag AI "{data["ai_tag"]}" já existe neste workflow'
-        }), 409
-    
-    # Criar mapeamento
-    mapping = AIGenerationMapping(
-        workflow_id=workflow.id,
-        ai_tag=data['ai_tag'],
-        source_fields=data.get('source_fields', []),
-        provider=provider,
-        model=data['model'],
-        ai_connection_id=ai_connection_id,
-        prompt_template=data.get('prompt_template'),
-        temperature=data.get('temperature', 0.7),
-        max_tokens=data.get('max_tokens', 1000),
-        fallback_value=data.get('fallback_value')
-    )
-    
-    db.session.add(mapping)
-    db.session.commit()
-    
-    logger.info(f"AI mapping criado: workflow={workflow_id}, tag={data['ai_tag']}")
-    
-    return jsonify({
-        'success': True,
-        'ai_mapping': mapping.to_dict()
-    }), 201
-
-
-@workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['GET'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-def get_ai_mapping(workflow_id, mapping_id):
-    """Retorna detalhes de um mapeamento de IA"""
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    mapping = AIGenerationMapping.query.filter_by(
-        id=mapping_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    return jsonify(mapping.to_dict())
-
-
-@workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['PATCH'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def update_ai_mapping(workflow_id, mapping_id):
-    """
-    Atualiza um mapeamento de IA.
-    
-    Body (todos opcionais):
-    {
-        "source_fields": [...],
-        "provider": "gemini",
-        "model": "gemini-1.5-pro",
-        "ai_connection_id": "uuid",
-        "prompt_template": "...",
-        "temperature": 0.5,
-        "max_tokens": 800,
-        "fallback_value": "..."
-    }
-    """
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    mapping = AIGenerationMapping.query.filter_by(
-        id=mapping_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    data = request.get_json()
-    
-    # Atualizar campos permitidos
-    if 'source_fields' in data:
-        mapping.source_fields = data['source_fields']
-    
-    if 'provider' in data:
-        provider = data['provider'].lower()
-        if provider not in AI_PROVIDERS:
-            return jsonify({
-                'error': f'Provedor não suportado. Use: {", ".join(AI_PROVIDERS)}'
-            }), 400
-        mapping.provider = provider
-    
-    if 'model' in data:
-        mapping.model = data['model']
-    
-    if 'ai_connection_id' in data:
-        ai_connection_id = data['ai_connection_id']
-        if ai_connection_id:
-            connection = DataSourceConnection.query.filter_by(
-                id=ai_connection_id,
-                organization_id=g.organization_id
-            ).first()
-            if not connection:
-                return jsonify({'error': 'Conexão de IA não encontrada'}), 400
-        mapping.ai_connection_id = ai_connection_id
-    
-    if 'prompt_template' in data:
-        mapping.prompt_template = data['prompt_template']
-    
-    if 'temperature' in data:
-        mapping.temperature = data['temperature']
-    
-    if 'max_tokens' in data:
-        mapping.max_tokens = data['max_tokens']
-    
-    if 'fallback_value' in data:
-        mapping.fallback_value = data['fallback_value']
-    
-    db.session.commit()
-    
-    return jsonify({
-        'success': True,
-        'ai_mapping': mapping.to_dict()
-    })
-
-
-@workflows_bp.route('/<workflow_id>/ai-mappings/<mapping_id>', methods=['DELETE'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def delete_ai_mapping(workflow_id, mapping_id):
-    """Deleta um mapeamento de IA"""
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    mapping = AIGenerationMapping.query.filter_by(
-        id=mapping_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    db.session.delete(mapping)
-    db.session.commit()
-    
-    return jsonify({'success': True})
-
-
-# ==================== WORKFLOW NODES ENDPOINTS ====================
-
-@workflows_bp.route('/<workflow_id>/nodes', methods=['GET'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-def list_workflow_nodes(workflow_id):
-    """Lista nodes de um workflow ordenados por position"""
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    nodes = WorkflowNode.query.filter_by(
-        workflow_id=workflow.id
-    ).order_by(WorkflowNode.position).all()
-    
-    return jsonify({
-        'nodes': [node.to_dict(include_config=True) for node in nodes]
-    })
-
-
-@workflows_bp.route('/<workflow_id>/nodes/<node_id>', methods=['GET'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-def get_workflow_node(workflow_id, node_id):
-    """Retorna detalhes de um node"""
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    node = WorkflowNode.query.filter_by(
-        id=node_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    return jsonify(node.to_dict(include_config=True))
-
-
-@workflows_bp.route('/<workflow_id>/nodes', methods=['POST'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def create_workflow_node(workflow_id):
-    """
-    Cria um novo node no workflow.
-    
-    Body:
-    {
-        "node_type": "google-docs",
-        "position": 2,
-        "parent_node_id": "uuid",
-        "config": {}
-    }
-    """
-    try:
-        workflow = Workflow.query.filter_by(
-            id=workflow_id,
-            organization_id=g.organization_id
-        ).first_or_404()
-        
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'Request body é obrigatório'}), 400
-        
-        # Validações
-        if not data.get('node_type'):
-            return jsonify({'error': 'node_type é obrigatório'}), 400
-        
-        node_type = data['node_type']
-        valid_types = [
-            # Triggers (sempre position 1)
-            'hubspot',           # NOVO: trigger HubSpot
-            'webhook',           # Trigger webhook
-            'google-forms',      # NOVO: trigger Google Forms
-            # Documentos
-            'google-docs',
-            'google-slides',
-            'microsoft-word',
-            'microsoft-powerpoint',
-            'file-upload',
-            # Email
-            'gmail',
-            'outlook',
-            # Human in the Loop
-            'review-documents',  # NOVO: substitui human-in-loop
-            'request-signatures', # NOVO: substitui signature/clicksign
-            # Compatibilidade (DEPRECATED - não usar em novos workflows)
-            'trigger',           # DEPRECATED: usar hubspot, webhook ou google-forms
-            'human-in-loop',     # DEPRECATED: usar review-documents
-            'clicksign',         # DEPRECATED: usar request-signatures
-            'signature',         # DEPRECATED: usar request-signatures
-        ]
-        if node_type not in valid_types:
-            return jsonify({
-                'error': f'node_type deve ser um de: {", ".join(valid_types)}'
-            }), 400
-        
-        # Se for qualquer tipo de trigger, verificar se já existe
-        if node_type in TRIGGER_NODE_TYPES:
-            existing_trigger = WorkflowNode.query.filter(
-                WorkflowNode.workflow_id == workflow.id,
-                WorkflowNode.node_type.in_(TRIGGER_NODE_TYPES)  # Usar constante centralizada
-            ).first()
-            if existing_trigger:
-                return jsonify({
-                    'error': 'Workflow já possui um trigger node. Cada workflow pode ter apenas um trigger.'
-                }), 400
-        
-        # Determinar position se não fornecido
-        position = data.get('position')
-        if not position:
-            # Buscar último position
-            last_node = WorkflowNode.query.filter_by(
-                workflow_id=workflow.id
-            ).order_by(WorkflowNode.position.desc()).first()
-            position = (last_node.position + 1) if last_node else 1
-        
-        # Se position for 1 e não for trigger, retornar erro
-        if position == 1 and node_type not in ['hubspot', 'webhook', 'google-forms']:
-            return jsonify({
-                'error': 'O primeiro node (position=1) deve ser um trigger (hubspot, webhook ou google-forms)'
-            }), 400
-        
-        # Validar parent_node_id se fornecido
-        parent_node_id = data.get('parent_node_id')
-        if parent_node_id:
-            parent = WorkflowNode.query.filter_by(
-                id=parent_node_id,
-                workflow_id=workflow.id
-            ).first()
-            if not parent:
-                return jsonify({'error': 'parent_node_id não encontrado'}), 400
-        
-        # Validar e limpar config
-        config = data.get('config', {})
-        if not isinstance(config, dict):
-            config = {}
-        
-        # Remover valores None para evitar problemas com JSONB
-        cleaned_config = {k: v for k, v in config.items() if v is not None}
-        
-        # Criar node
-        node = WorkflowNode(
-            workflow_id=workflow.id,
-            node_type=node_type,
-            position=position,
-            parent_node_id=parent_node_id,
-            config=cleaned_config,
-            status='draft'
-        )
-        
-        db.session.add(node)
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'node': node.to_dict(include_config=True)
-        }), 201
-    
-    except IntegrityError as e:
-        db.session.rollback()
-        error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
-        if 'unique_workflow_position' in error_msg.lower():
-            # Tentar extrair position da mensagem de erro ou usar o que foi enviado
-            position_used = 'desconhecida'
-            try:
-                if 'data' in locals():
-                    position_used = data.get('position', 'desconhecida')
-            except:
-                pass
-            return jsonify({
-                'error': f'Já existe um node na posição {position_used}. Por favor, escolha outra posição.'
-            }), 400
-        logger.error(f'IntegrityError ao criar node: {error_msg}')
-        return jsonify({'error': 'Erro ao criar node: violação de constraint única'}), 400
-    
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f'Erro ao criar node no workflow {workflow_id}: {str(e)}', exc_info=True)
-        return jsonify({
-            'error': f'Erro ao criar node: {str(e)}'
-        }), 500
-
-
-@workflows_bp.route('/<workflow_id>/nodes/<node_id>', methods=['PUT'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def update_workflow_node(workflow_id, node_id):
-    """Atualiza um node do workflow"""
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    node = WorkflowNode.query.filter_by(
-        id=node_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    data = request.get_json()
-    
-    # Não permitir alterar node_type de um trigger para não-trigger
-    if node.is_trigger() and 'node_type' in data and data['node_type'] not in TRIGGER_NODE_TYPES:
-        return jsonify({
-            'error': 'Não é possível alterar o tipo do trigger node para um tipo não-trigger'
-        }), 400
-    
-    # Atualizar campos permitidos
-    if 'position' in data:
-        # Validar que não está tentando colocar outro node na position 1
-        if data['position'] == 1 and not node.is_trigger():
-            return jsonify({
-                'error': 'Apenas trigger nodes (hubspot, webhook, google-forms) podem ter position=1'
-            }), 400
-        node.position = data['position']
-    
-    if 'parent_node_id' in data:
-        parent_node_id = data['parent_node_id']
-        if parent_node_id:
-            parent = WorkflowNode.query.filter_by(
-                id=parent_node_id,
-                workflow_id=workflow.id
-            ).first()
-            if not parent:
-                return jsonify({'error': 'parent_node_id não encontrado'}), 400
-        node.parent_node_id = parent_node_id
-    
-    if 'config' in data:
-        node.config = data['config']
-        # Atualizar status baseado na configuração
-        if node.is_configured():
-            node.status = 'configured'
-        else:
-            node.status = 'draft'
-    
-    if 'status' in data:
-        node.status = data['status']
-    
-    db.session.commit()
-    
-    return jsonify({
-        'success': True,
-        'node': node.to_dict(include_config=True)
-    })
-
-
-@workflows_bp.route('/<workflow_id>/nodes/<node_id>', methods=['DELETE'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def delete_workflow_node(workflow_id, node_id):
-    """Deleta um node do workflow"""
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    node = WorkflowNode.query.filter_by(
-        id=node_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    # Não permitir deletar trigger node
-    if node.is_trigger():
-        return jsonify({
-            'error': 'Não é possível deletar o trigger node'
-        }), 400
-    
-    # Verificar se há nodes filhos
-    children = WorkflowNode.query.filter_by(
-        parent_node_id=node.id
-    ).count()
-    
-    if children > 0:
-        return jsonify({
-            'error': f'Não é possível deletar node com {children} node(s) filho(s). Remova os nodes filhos primeiro.'
-        }), 400
-    
-    db.session.delete(node)
-    db.session.commit()
-    
-    return jsonify({'success': True})
-
-
-@workflows_bp.route('/<workflow_id>/nodes/order', methods=['PUT'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def reorder_workflow_nodes(workflow_id):
-    """
-    Reordena nodes do workflow.
-    
-    Body:
-    {
-        "node_order": [
-            {"node_id": "uuid1", "position": 1},
-            {"node_id": "uuid2", "position": 2}
-        ]
-    }
-    """
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    data = request.get_json()
-    node_order = data.get('node_order', [])
-    
-    if not node_order:
-        return jsonify({'error': 'node_order é obrigatório'}), 400
-    
-    # Validar que todos os nodes pertencem ao workflow
-    node_ids = [item['node_id'] for item in node_order]
-    nodes = WorkflowNode.query.filter(
-        WorkflowNode.id.in_(node_ids),
-        WorkflowNode.workflow_id == workflow.id
-    ).all()
-    
-    if len(nodes) != len(node_ids):
-        return jsonify({
-            'error': 'Um ou mais nodes não pertencem a este workflow'
-        }), 400
-    
-    # Validar que position 1 é um trigger
-    position_1_node = next((item for item in node_order if item['position'] == 1), None)
-    if position_1_node:
-        node_1 = next((n for n in nodes if str(n.id) == position_1_node['node_id']), None)
-        if not node_1 or not node_1.is_trigger():
-            return jsonify({
-                'error': 'O node na position 1 deve ser um trigger (hubspot, webhook ou google-forms)'
-            }), 400
-    
-    # Atualizar positions em duas etapas para evitar conflito de constraint única
-    try:
-        # Etapa 1: Atualizar todos para posições temporárias (negativas)
-        # Isso evita conflito quando dois nodes precisam trocar de posição
-        for idx, item in enumerate(node_order):
-            node = next((n for n in nodes if str(n.id) == item['node_id']), None)
-            if node:
-                temp_position = -(idx + 1000)  # Posições temporárias negativas (ex: -1000, -1001, etc.)
-                node.position = temp_position
-        
-        db.session.commit()  # Commit das posições temporárias
-        
-        # Etapa 2: Atualizar para posições finais
-        for item in node_order:
-            node = next((n for n in nodes if str(n.id) == item['node_id']), None)
-            if node:
-                node.position = item['position']
-        
-        db.session.commit()
-        
-        current_app.logger.info(f'Nodes reordenados com sucesso no workflow {workflow_id}')
-        return jsonify({'success': True})
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f'Erro ao reordenar nodes no workflow {workflow_id}: {str(e)}')
-        return jsonify({'error': f'Erro ao reordenar nodes: {str(e)}'}), 500
-
-
-@workflows_bp.route('/<workflow_id>/nodes/<node_id>/config', methods=['GET'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-def get_workflow_node_config(workflow_id, node_id):
-    """Retorna configuração de um node"""
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    node = WorkflowNode.query.filter_by(
-        id=node_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    response_data = {
-        'config': node.config or {},
-        'status': node.status
-    }
-    
-    # Adicionar webhook_token se for webhook trigger node
-    if (node.node_type == 'webhook' or (node.node_type == 'trigger' and node.config.get('trigger_type') == 'webhook')) and node.webhook_token:
-        response_data['webhook_token'] = node.webhook_token
-    
-    return jsonify(response_data)
-
-
-@workflows_bp.route('/<workflow_id>/nodes/<node_id>/config', methods=['PUT'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-@require_admin
-def update_workflow_node_config(workflow_id, node_id):
-    """
-    Atualiza configuração de um node.
-    
-    Body:
-    {
-        "config": {
-            "template_id": "uuid",
-            "output_name_template": "...",
-            ...
-        }
-    }
-    """
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    node = WorkflowNode.query.filter_by(
-        id=node_id,
-        workflow_id=workflow.id
-    ).first_or_404()
-    
-    data = request.get_json()
-    
-    if 'config' not in data:
-        return jsonify({'error': 'config é obrigatório'}), 400
-    
-    node.config = data['config']
-    
-    # Atualizar status baseado na configuração
-    if node.is_configured():
-        node.status = 'configured'
-    else:
-        node.status = 'draft'
-    
-    db.session.commit()
-    
-    return jsonify({
-        'success': True,
-        'config': node.config,
-        'status': node.status
-    })
-
-
-@workflows_bp.route('/<workflow_id>/field-mappings', methods=['GET'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-def get_workflow_field_mappings(workflow_id):
-    """
-    Retorna field mappings de todos os nodes Google Docs do workflow.
-    Útil para mostrar no HubSpot App quais tags serão preenchidas.
-    """
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    # Buscar nodes Google Docs
-    google_docs_nodes = WorkflowNode.query.filter_by(
-        workflow_id=workflow.id,
-        node_type='google-docs'
-    ).all()
-    
-    # Extrair field mappings de cada node
-    all_mappings = []
-    for node in google_docs_nodes:
-        config = node.config or {}
-        field_mappings = config.get('field_mappings', [])
-        for mapping in field_mappings:
-            all_mappings.append({
-                'node_id': str(node.id),
-                'template_tag': mapping.get('template_tag'),
-                'source_field': mapping.get('source_field'),
-                'transform_type': mapping.get('transform_type'),
-                'default_value': mapping.get('default_value')
-            })
-    
-    # Também incluir field mappings legados do workflow (para compatibilidade)
-    legacy_mappings = list(workflow.field_mappings)
-    for mapping in legacy_mappings:
-        all_mappings.append({
-            'node_id': None,  # Indica que é mapping legado
-            'template_tag': mapping.template_tag,
-            'source_field': mapping.source_field,
-            'transform_type': mapping.transform_type,
-            'default_value': mapping.default_value
-        })
-    
-    # Buscar AI mappings também
-    ai_mappings = []
-    for mapping in workflow.ai_mappings:
-        ai_mappings.append({
-            'ai_tag': mapping.ai_tag,
-            'source_fields': mapping.source_fields,
-            'provider': mapping.provider,
-            'model': mapping.model
-        })
-    
-    return jsonify({
-        'field_mappings': all_mappings,
-        'ai_mappings': ai_mappings
-    })
-
-
-@workflows_bp.route('/<workflow_id>/preview', methods=['GET'])
-@flexible_hubspot_auth
-@require_auth
-@require_org
-def preview_workflow_data(workflow_id):
-    """
-    Preview dos dados que serão usados ao gerar documento.
-    
-    Query params:
-    - object_type: deal, contact, company, ticket (obrigatório)
-    - object_id: ID do objeto no HubSpot (obrigatório)
-    """
-    workflow = Workflow.query.filter_by(
-        id=workflow_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    object_type = request.args.get('object_type')
-    object_id = request.args.get('object_id')
-    
-    if not object_type or not object_id:
-        return jsonify({
-            'error': 'object_type e object_id são obrigatórios'
-        }), 400
-    
-    try:
-        # Buscar trigger node para obter conexão
-        trigger_node = WorkflowNode.query.filter_by(
-            workflow_id=workflow.id,
-            node_type='trigger'
-        ).first()
-        
-        if not trigger_node or not trigger_node.config:
-            return jsonify({
-                'error': 'Trigger node não configurado'
-            }), 400
-        
-        trigger_config = trigger_node.config
-        source_connection_id = trigger_config.get('source_connection_id')
-        
-        if not source_connection_id:
-            return jsonify({
-                'error': 'Conexão de dados não configurada no trigger'
-            }), 400
-        
-        # Buscar conexão
-        connection = DataSourceConnection.query.get(source_connection_id)
-        if not connection:
-            return jsonify({
-                'error': 'Conexão não encontrada'
-            }), 400
-        
-        # Buscar dados do objeto
-        from app.services.data_sources.hubspot import HubSpotDataSource
-        data_source = HubSpotDataSource(connection)
-        source_data = data_source.get_object_data(object_type, object_id)
-        
-        # Normalizar dados
-        if isinstance(source_data, dict) and 'properties' in source_data:
-            properties = source_data.pop('properties', {})
-            if isinstance(properties, dict):
-                source_data.update(properties)
-        
-        # Buscar field mappings
-        google_docs_nodes = WorkflowNode.query.filter_by(
-            workflow_id=workflow.id,
-            node_type='google-docs'
-        ).all()
-        
-        field_mappings_preview = []
-        for node in google_docs_nodes:
-            config = node.config or {}
-            field_mappings = config.get('field_mappings', [])
-            
-            for mapping in field_mappings:
-                template_tag = mapping.get('template_tag')
-                source_field = mapping.get('source_field')
-                
-                # Buscar valor
-                from app.services.document_generation.tag_processor import TagProcessor
-                value = TagProcessor._get_nested_value(source_data, source_field)
-                
-                field_mappings_preview.append({
-                    'template_tag': template_tag,
-                    'source_field': source_field,
-                    'value': value,
-                    'status': 'ok' if value is not None else 'missing',
-                    'label': template_tag.replace('_', ' ').title()
-                })
-        
-        # Buscar AI mappings
-        ai_mappings_preview = []
-        for mapping in workflow.ai_mappings:
-            ai_mappings_preview.append({
-                'ai_tag': mapping.ai_tag,
-                'source_fields': mapping.source_fields,
-                'provider': mapping.provider,
-                'model': mapping.model,
-                'preview': f'[AI: {mapping.ai_tag}]'  # Placeholder
-            })
-        
-        # Validação
-        missing_fields = [m['source_field'] for m in field_mappings_preview if m['status'] == 'missing']
-        all_tags_available = len(missing_fields) == 0
-        
-        return jsonify({
-            'field_mappings': field_mappings_preview,
-            'ai_mappings': ai_mappings_preview,
-            'validation': {
-                'all_tags_available': all_tags_available,
-                'missing_fields': missing_fields,
-                'warnings': []
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Erro ao gerar preview: {str(e)}")
-        return jsonify({
-            'error': str(e)
-        }), 500
-
-
 # ==================== WORKFLOW EXECUTIONS (RUNS) ENDPOINTS ====================
 
 @workflows_bp.route('/<workflow_id>/runs', methods=['GET'])
@@ -1338,11 +382,9 @@ def list_workflow_runs(workflow_id):
     # Aplicar paginação e ordenação
     executions = query.order_by(WorkflowExecution.started_at.desc()).offset(offset).limit(limit).all()
     
-    # Buscar nodes do workflow para calcular steps
-    nodes = WorkflowNode.query.filter_by(
-        workflow_id=workflow.id
-    ).order_by(WorkflowNode.position).all()
-    total_steps = len([n for n in nodes if not n.is_trigger()])  # Excluir trigger node
+    # Normalizar nodes do JSONB para calcular steps
+    nodes_data = normalize_nodes_from_jsonb(workflow.nodes or [], workflow.edges or [])
+    total_steps = len([n for n in nodes_data if n.get('position', 0) > 1])  # Excluir trigger (position=1)
     
     # Converter para formato esperado pela interface
     runs = []
@@ -1371,11 +413,11 @@ def list_workflow_runs(workflow_id):
             # Para running, calcular baseado no current_node_id ou logs
             if execution.current_node_id:
                 # Encontrar posição do node atual
-                current_node = next((n for n in nodes if str(n.id) == str(execution.current_node_id)), None)
+                current_node = next((n for n in nodes_data if n.get('id') == str(execution.current_node_id)), None)
                 if current_node:
                     # Contar nodes executados antes do atual (excluindo trigger)
-                    steps_completed = len([n for n in nodes 
-                                         if n.position < current_node.position and not n.is_trigger()])
+                    steps_completed = len([n for n in nodes_data 
+                                         if n.get('position', 0) < current_node.get('position', 0) and n.get('position', 0) > 1])
             elif execution.execution_logs:
                 # Calcular baseado nos logs (nodes com status 'success' ou 'failed')
                 completed_nodes = [log for log in execution.execution_logs 
@@ -1438,11 +480,9 @@ def get_workflow_run(workflow_id, run_id):
         workflow_id=workflow.id
     ).first_or_404()
     
-    # Buscar nodes do workflow para calcular steps
-    nodes = WorkflowNode.query.filter_by(
-        workflow_id=workflow.id
-    ).order_by(WorkflowNode.position).all()
-    total_steps = len([n for n in nodes if not n.is_trigger()])
+    # Normalizar nodes do JSONB para calcular steps
+    nodes_data = normalize_nodes_from_jsonb(workflow.nodes or [], workflow.edges or [])
+    total_steps = len([n for n in nodes_data if n.get('position', 0) > 1])
     
     # Mapear status
     status_mapping = {
@@ -1482,13 +522,13 @@ def get_workflow_run(workflow_id, run_id):
     # Buscar informações do node atual
     current_node_info = None
     if execution.current_node_id:
-        current_node = WorkflowNode.query.get(execution.current_node_id)
+        current_node = next((n for n in nodes_data if n.get('id') == str(execution.current_node_id)), None)
         if current_node:
             current_node_info = {
-                'id': str(current_node.id),
-                'node_type': current_node.node_type,
-                'position': current_node.position,
-                'name': current_node.config.get('name') if current_node.config else None
+                'id': current_node.get('id'),
+                'node_type': current_node.get('node_type'),
+                'position': current_node.get('position'),
+                'name': current_node.get('config', {}).get('name')
             }
     
     # Verificar se deve incluir logs

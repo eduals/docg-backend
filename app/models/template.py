@@ -33,7 +33,7 @@ class Template(db.Model):
     
     # Relationships
     creator = db.relationship('User', foreign_keys=[created_by])
-    workflows = db.relationship('Workflow', backref='template', lazy='dynamic')
+    # workflows = db.relationship('Workflow', backref='template', lazy='dynamic')  # REMOVED: workflows.template_id dropado na migration JSONB
     documents = db.relationship('GeneratedDocument', backref='template', lazy='dynamic')
     
     def to_dict(self, include_tags=False):

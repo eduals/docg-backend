@@ -16,7 +16,6 @@ import uuid
 logger = logging.getLogger(__name__)
 documents_bp = Blueprint('documents', __name__, url_prefix='/api/v1/documents')
 
-
 @documents_bp.route('', methods=['GET'])
 @flexible_hubspot_auth
 @require_org
@@ -54,7 +53,6 @@ def list_documents():
         'current_page': page
     })
 
-
 @documents_bp.route('/<document_id>', methods=['GET'])
 @flexible_hubspot_auth
 @require_auth
@@ -69,7 +67,6 @@ def get_document(document_id):
     ).first_or_404()
     
     return jsonify(doc_to_dict(doc, include_details=True))
-
 
 @documents_bp.route('/generate', methods=['POST'])
 @flexible_hubspot_auth
@@ -128,7 +125,7 @@ def generate_document():
     # Gerar documento usando WorkflowExecutor
     try:
         # Verificar se workflow tem nodes configurados
-        from app.models import WorkflowNode
+        # Model removed during JSONB migration
         nodes = WorkflowNode.query.filter_by(workflow_id=workflow.id).count()
         
         if nodes > 0:
@@ -180,7 +177,6 @@ def generate_document():
         logger.error(f"Erro ao gerar documento: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-
 @documents_bp.route('/<document_id>/regenerate', methods=['POST'])
 @flexible_hubspot_auth
 @require_auth
@@ -196,7 +192,7 @@ def regenerate_document(document_id):
     
     # Regenerar usando WorkflowExecutor se workflow tiver nodes
     try:
-        from app.models import WorkflowNode
+        # Model removed during JSONB migration
         nodes = WorkflowNode.query.filter_by(workflow_id=doc.workflow_id).count()
         
         if nodes > 0:
@@ -247,7 +243,6 @@ def regenerate_document(document_id):
         logger.error(f"Erro ao regenerar documento: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-
 @documents_bp.route('/<document_id>', methods=['DELETE'])
 @flexible_hubspot_auth
 @require_auth
@@ -267,7 +262,6 @@ def delete_document(document_id):
     db.session.commit()
     
     return jsonify({'success': True})
-
 
 def doc_to_dict(doc: GeneratedDocument, include_details: bool = False) -> dict:
     """Converte documento para dicionário"""

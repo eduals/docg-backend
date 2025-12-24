@@ -23,37 +23,40 @@ def _publish_sse_event(event_type: str, data: Dict[str, Any], execution_id: str)
 async def load_execution(execution_id: str) -> Dict[str, Any]:
     """
     Carrega dados da execução e workflow do banco.
-    
+
     Args:
         execution_id: ID da WorkflowExecution
-    
+
     Returns:
         Dict com execution, workflow e nodes
     """
     from app.database import db
-    from app.models import WorkflowExecution, Workflow, WorkflowNode
+    from app.models import WorkflowExecution, Workflow
+    from app.engine.flow.normalization import normalize_nodes_from_jsonb
     from flask import current_app
-    
+
     # Precisa do contexto Flask para acessar o banco
     with current_app.app_context():
         execution = WorkflowExecution.query.get(execution_id)
         if not execution:
             raise ValueError(f'Execução não encontrada: {execution_id}')
-        
+
         workflow = Workflow.query.get(execution.workflow_id)
         if not workflow:
             raise ValueError(f'Workflow não encontrado: {execution.workflow_id}')
-        
-        nodes = WorkflowNode.query.filter_by(
-            workflow_id=workflow.id
-        ).order_by(WorkflowNode.position).all()
-        
-        activity.logger.info(f"Carregada execução {execution_id} com {len(nodes)} nodes")
-        
+
+        # Normalizar nodes do JSONB
+        nodes_data = normalize_nodes_from_jsonb(
+            workflow.nodes or [],
+            workflow.edges or []
+        )
+
+        activity.logger.info(f"Carregada execução {execution_id} com {len(nodes_data)} nodes")
+
         return {
             'execution': execution.to_dict(include_logs=True),
             'workflow': workflow.to_dict(),
-            'nodes': [n.to_dict(include_config=True) for n in nodes],
+            'nodes': nodes_data,  # Nodes já normalizados
             'organization_id': str(workflow.organization_id)
         }
 

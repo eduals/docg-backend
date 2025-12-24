@@ -34,12 +34,8 @@ class ExecutionStep(db.Model):
         nullable=False
     )
 
-    # Referência ao node do workflow
-    step_id = db.Column(
-        UUID(as_uuid=True),
-        db.ForeignKey('workflow_nodes.id', ondelete='SET NULL'),
-        nullable=True
-    )
+    # Referência ao node do workflow (ID do node no JSONB)
+    node_id = db.Column(db.String(255), nullable=True)
 
     # Tipo do step (cópia do node_type para facilitar queries)
     step_type = db.Column(db.String(50), nullable=False)
@@ -102,14 +98,12 @@ class ExecutionStep(db.Model):
         backref=db.backref('steps', lazy='dynamic', cascade='all, delete-orphan')
     )
 
-    node = db.relationship('WorkflowNode', foreign_keys=[step_id])
-
     # === Indexes ===
     __table_args__ = (
         db.Index('idx_execution_step_execution', 'execution_id'),
         db.Index('idx_execution_step_position', 'execution_id', 'position'),
         db.Index('idx_execution_step_status', 'execution_id', 'status'),
-        db.Index('idx_execution_step_step_id', 'step_id'),
+        db.Index('idx_execution_step_node_id', 'node_id'),
     )
 
     def to_dict(self, include_data=True):
@@ -117,7 +111,7 @@ class ExecutionStep(db.Model):
         result = {
             'id': str(self.id),
             'execution_id': str(self.execution_id),
-            'step_id': str(self.step_id) if self.step_id else None,
+            'node_id': self.node_id,
             'step_type': self.step_type,
             'position': self.position,
             'app_key': self.app_key,
@@ -225,13 +219,13 @@ class ExecutionStep(db.Model):
         return value
 
     @classmethod
-    def create_for_node(cls, execution_id, node, data_in: dict = None):
+    def create_for_node(cls, execution_id, node_dict, data_in: dict = None):
         """
-        Factory method para criar ExecutionStep a partir de um WorkflowNode.
+        Factory method para criar ExecutionStep a partir de um node dict.
 
         Args:
             execution_id: UUID da WorkflowExecution
-            node: WorkflowNode sendo executado
+            node_dict: Dict do node (do workflow.nodes JSONB)
             data_in: Parâmetros de entrada após computeParameters
 
         Returns:
@@ -239,9 +233,9 @@ class ExecutionStep(db.Model):
         """
         return cls(
             execution_id=execution_id,
-            step_id=node.id,
-            step_type=node.node_type,
-            position=node.position,
+            node_id=node_dict['id'],
+            step_type=node_dict['node_type'],
+            position=node_dict['position'],
             data_in=data_in,
             status='pending'
         )

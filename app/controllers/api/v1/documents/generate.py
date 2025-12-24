@@ -3,7 +3,7 @@ Generate Document Controller.
 """
 
 from flask import request, jsonify, g
-from app.models import Workflow, WorkflowNode, GeneratedDocument
+from app.models import Workflow, GeneratedDocument
 from app.services.document_generation import DocumentGenerator
 from app.services.workflow_executor import WorkflowExecutor
 from app.services.data_sources.hubspot import HubSpotDataSource
@@ -13,7 +13,6 @@ import logging
 import uuid
 
 logger = logging.getLogger(__name__)
-
 
 def generate_document():
     """

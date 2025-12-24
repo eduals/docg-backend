@@ -13,7 +13,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class Engine:
     """
     Engine centralizada para execução de workflows.
@@ -167,7 +166,7 @@ class Engine:
         Returns:
             Dict com resultado do step
         """
-        from app.models import WorkflowNode, ExecutionStep
+        from app.models import ExecutionStep
         from app.engine.action.process import process_action_step
         from app.engine.trigger.process import process_trigger_step
         from app.database import db
@@ -231,7 +230,6 @@ class Engine:
         """
         from app.apps import AppRegistry
         return AppRegistry.get_by_node_type(node_type)
-
 
 # Função helper para execução simples
 async def run_workflow(

@@ -21,20 +21,24 @@ def detect_phase(node) -> ExecutionPhase:
     Detecta a fase de execução de um node baseado no action_key.
 
     Args:
-        node: WorkflowNode
+        node: Node dict (do JSONB)
 
     Returns:
         ExecutionPhase correspondente
     """
-    # Obter action_key dos parâmetros ou config
+    # Obter action_key do config (node é dict)
     action_key = ''
-    if hasattr(node, 'parameters') and node.parameters:
-        action_key = node.parameters.get('action_key', '')
-    elif hasattr(node, 'config') and node.config:
-        action_key = node.config.get('action_key', '')
-
-    # Obter node_type
-    node_type = getattr(node, 'node_type', '')
+    if isinstance(node, dict):
+        config = node.get('config', {})
+        action_key = config.get('action_key', '')
+        node_type = node.get('node_type', '')
+    else:
+        # Fallback para compatibilidade com objetos
+        if hasattr(node, 'parameters') and node.parameters:
+            action_key = node.parameters.get('action_key', '')
+        elif hasattr(node, 'config') and node.config:
+            action_key = node.config.get('action_key', '')
+        node_type = getattr(node, 'node_type', '')
 
     # Preflight é sempre primeiro
     if action_key == 'preflight':
@@ -94,7 +98,7 @@ async def iterate_steps(
     Returns:
         Dict com resultado da execução
     """
-    from app.models import WorkflowExecution, WorkflowNode, ExecutionStep
+    from app.models import WorkflowExecution, ExecutionStep
     from app.database import db
     from app.engine.flow.context import (
         get_trigger_node,
@@ -132,49 +136,53 @@ async def iterate_steps(
         # 1. Processar trigger node
         trigger_node_data = get_trigger_node(flow_context)
         if trigger_node_data:
-            trigger_node = WorkflowNode.query.get(trigger_node_data['id'])
-            if trigger_node:
-                # Construir contexto do trigger
-                trigger_context = await build_trigger_context(
-                    node=trigger_node,
-                    execution_id=execution_id,
-                    flow_context=flow_context,
+            # Usar dados do JSONB diretamente (flow_context já tem nodes normalizados)
+            # Construir contexto do trigger
+            trigger_context = await build_trigger_context(
+                node=trigger_node_data,  # Passar dict do JSONB
+                execution_id=execution_id,
+                flow_context=flow_context,
+                trigger_data=trigger_data,
+            )
+
+            # Criar ExecutionStep para trigger
+            trigger_step = ExecutionStep(
+                execution_id=execution_id,
+                node_id=trigger_node_data['id'],  # Usar node_id String (não FK)
+                status='running',
+                data_in=trigger_data,
+                started_at=datetime.utcnow(),
+            )
+            if not test_run:
+                db.session.add(trigger_step)
+                db.session.commit()
+
+            try:
+                # Processar trigger
+                trigger_output = await process_trigger_step(
+                    node=trigger_node_data,  # Passar dict
                     trigger_data=trigger_data,
+                    context=trigger_context,
                 )
 
-                # Criar ExecutionStep para trigger
-                trigger_step = ExecutionStep.create_for_node(
-                    execution_id=execution_id,
-                    node=trigger_node,
-                    data_in=trigger_data,
-                )
                 if not test_run:
-                    db.session.add(trigger_step)
-                    trigger_step.start()
+                    trigger_step.data_out = trigger_output
+                    trigger_step.status = 'success'
+                    trigger_step.completed_at = datetime.utcnow()
                     db.session.commit()
 
-                try:
-                    # Processar trigger
-                    trigger_output = await process_trigger_step(
-                        node=trigger_node,
-                        trigger_data=trigger_data,
-                        context=trigger_context,
-                    )
+                previous_steps.append(trigger_step)
 
-                    if not test_run:
-                        trigger_step.complete(data_out=trigger_output)
-                        db.session.commit()
-
-                    previous_steps.append(trigger_step)
-
-                except Exception as e:
-                    logger.error(f"Trigger step failed: {e}")
-                    if not test_run:
-                        trigger_step.fail(str(e))
-                        execution.status = 'failed'
-                        execution.error_message = str(e)
-                        db.session.commit()
-                    raise
+            except Exception as e:
+                logger.error(f"Trigger step failed: {e}")
+                if not test_run:
+                    trigger_step.status = 'failed'
+                    trigger_step.error_message = str(e)
+                    trigger_step.completed_at = datetime.utcnow()
+                    execution.status = 'failed'
+                    execution.error_message = str(e)
+                    db.session.commit()
+                raise
 
         # 2. Processar action nodes com suporte a branching
         last_action_output = {}
@@ -210,7 +218,8 @@ async def iterate_steps(
                 logger.info(f"Stopping before step {node_id} (until_step)")
                 break
 
-            action_node = WorkflowNode.query.get(node_id)
+            # Usar dados do JSONB diretamente (current_node_data já é dict)
+            action_node = current_node_data
             if not action_node:
                 logger.warning(f"Node {node_id} not found, skipping")
                 break
@@ -225,13 +234,13 @@ async def iterate_steps(
 
             # Verificar se step deve ser pulado
             if node_id in skip_set:
-                logger.info(f"Skipping node {action_node.position}: {action_node.node_type} ({node_id})")
+                logger.info(f"Skipping node {action_node.get("position", 0)}: {action_node.get("node_type")} ({node_id})")
                 # Criar ExecutionStep marcado como skipped
                 if not test_run:
                     skip_step = ExecutionStep.create_for_node(
                         execution_id=execution_id,
                         node=action_node,
-                        data_in=action_node.config,
+                        data_in=action_node.get("config", {}),
                     )
                     db.session.add(skip_step)
                     skip_step.status = 'skipped'
@@ -253,7 +262,7 @@ async def iterate_steps(
                     skip_step = ExecutionStep.create_for_node(
                         execution_id=execution_id,
                         node=action_node,
-                        data_in=action_node.config,
+                        data_in=action_node.get("config", {}),
                     )
                     db.session.add(skip_step)
                     skip_step.status = 'skipped'
@@ -269,7 +278,7 @@ async def iterate_steps(
                 )
                 continue
 
-            logger.info(f"Executing node {action_node.position}: {action_node.node_type} ({node_id})")
+            logger.info(f"Executing node {action_node.get("position", 0)}: {action_node.get("node_type")} ({node_id})")
 
             # Construir contexto da action
             action_context = await build_action_context(
@@ -284,14 +293,14 @@ async def iterate_steps(
             action_step = ExecutionStep.create_for_node(
                 execution_id=execution_id,
                 node=action_node,
-                data_in=action_node.config,
+                data_in=action_node.get("config", {}),
             )
             if not test_run:
                 db.session.add(action_step)
                 action_step.start()
 
                 # Atualizar current_node na execução
-                execution.current_node_id = action_node.id
+                execution.current_node_id = action_node["id"]
                 db.session.commit()
 
             try:
@@ -303,7 +312,7 @@ async def iterate_steps(
                     # Processar action normalmente
                     action_output = await process_action_step(
                         node=action_node,
-                        parameters=action_node.config,
+                        parameters=action_node.get("config", {}),
                         context=action_context,
                         previous_steps=previous_steps,
                     )
@@ -317,7 +326,7 @@ async def iterate_steps(
                 previous_steps.append(action_step)
 
             except Exception as e:
-                logger.error(f"Action step {action_node.id} failed: {e}")
+                logger.error(f"Action step {action_node["id"]} failed: {e}")
                 if not test_run:
                     action_step.fail(str(e))
                     execution.status = 'failed'
@@ -380,7 +389,7 @@ async def iterate_single_step(
     Executa um único step (usado pelo Temporal).
 
     Args:
-        step_id: ID do WorkflowNode
+        step_id: ID do node (String)
         execution_id: ID da execução
         flow_context: FlowContextData
         trigger_output: Output do trigger
@@ -389,18 +398,26 @@ async def iterate_single_step(
     Returns:
         Dict com resultado do step
     """
-    from app.models import WorkflowNode, ExecutionStep
+    from app.models import ExecutionStep
     from app.database import db
     from app.engine.action.context import build_action_context
     from app.engine.action.process import process_action_step
     from app.engine.trigger.context import build_trigger_context
     from app.engine.trigger.process import process_trigger_step
+    from app.engine.flow.context import get_node_by_id
 
-    node = WorkflowNode.query.get(step_id)
+    # Buscar node do flow_context (JSONB)
+    node = get_node_by_id(flow_context, step_id)
     if not node:
         raise ValueError(f"Node {step_id} not found")
 
-    if node.is_trigger():
+    # Verificar se é trigger pelo position ou node_type
+    is_trigger = (
+        node.get('position') == 1 or
+        node.get('node_type') in ['trigger', 'webhook', 'hubspot', 'google-forms']
+    )
+
+    if is_trigger:
         context = await build_trigger_context(
             node=node,
             execution_id=execution_id,
@@ -416,4 +433,4 @@ async def iterate_single_step(
             trigger_output=trigger_output,
             previous_steps=previous_steps or [],
         )
-        return await process_action_step(node, node.config, context, previous_steps or [])
+        return await process_action_step(node, node.get('config', {}), context, previous_steps or [])

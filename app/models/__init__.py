@@ -2,7 +2,7 @@
 from .organization import Organization, User, OrganizationFeature
 from .connection import DataSourceConnection
 from .template import Template
-from .workflow import Workflow, WorkflowFieldMapping, AIGenerationMapping, WorkflowNode
+from .workflow import Workflow, TRIGGER_NODE_TYPES
 from .approval import WorkflowApproval
 from .hubspot_property_cache import HubSpotPropertyCache
 from .document import GeneratedDocument
@@ -74,9 +74,7 @@ __all__ = [
     'DataSourceConnection',
     'Template',
     'Workflow',
-    'WorkflowFieldMapping',
-    'AIGenerationMapping',
-    'WorkflowNode',
+    'TRIGGER_NODE_TYPES',
     'WorkflowApproval',
     'HubSpotPropertyCache',
     'GeneratedDocument',

@@ -3,7 +3,8 @@ Rotas para webhooks - endpoints públicos e de teste para webhook triggers.
 """
 from flask import Blueprint, request, jsonify, g
 from app.database import db
-from app.models import Workflow, WorkflowNode, WorkflowExecution, Organization
+from app.models import Workflow, WorkflowExecution, Organization
+from app.engine.flow.normalization import normalize_nodes_from_jsonb
 from app.services.workflow_executor import WorkflowExecutor
 from app.utils.auth import require_auth, require_org
 from app.config import Config
@@ -68,31 +69,37 @@ def receive_webhook(workflow_id, webhook_token):
         webhook_token: Token único do webhook trigger node
     """
     try:
-        # Buscar trigger node pelo token (webhook trigger)
-        trigger_node = WorkflowNode.query.filter(
-            WorkflowNode.webhook_token == webhook_token,
-            WorkflowNode.workflow_id == workflow_id,
-            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade) - usar TRIGGER_NODE_TYPES se necessário
-        ).first()
-        
-        if not trigger_node:
-            logger.warning(f'Webhook token inválido: {webhook_token}')
-            return jsonify({'error': 'Invalid webhook token'}), 401
-        
         # Verificar se workflow está ativo
         workflow = Workflow.query.get(workflow_id)
         if not workflow or workflow.status != 'active':
             logger.warning(f'Workflow não encontrado ou inativo: {workflow_id}')
             return jsonify({'error': 'Workflow not found or inactive'}), 404
-        
+
+        # Buscar trigger node pelo token do JSONB
+        nodes = normalize_nodes_from_jsonb(workflow.nodes or [], workflow.edges or [])
+        trigger_node = None
+        for node in nodes:
+            node_type = node.get('node_type')
+            node_config = node.get('config', {})
+            node_webhook_token = node_config.get('webhook_token')
+
+            # Verificar se é webhook trigger com token correto
+            if node_type in ['webhook', 'trigger'] and node_webhook_token == webhook_token:
+                trigger_node = node
+                break
+
+        if not trigger_node:
+            logger.warning(f'Webhook token inválido: {webhook_token}')
+            return jsonify({'error': 'Invalid webhook token'}), 401
+
         # Extrair payload
         if request.is_json:
             payload = request.get_json()
         else:
             payload = request.form.to_dict() or {}
-        
+
         # Obter field mapping do config
-        config = trigger_node.config or {}
+        config = trigger_node.get('config', {})
         field_mapping = config.get('field_mapping', {})
         source_object_type = config.get('source_object_type', 'webhook')
         
@@ -175,35 +182,40 @@ def test_webhook(workflow_id):
             organization_id=g.organization_id
         ).first_or_404()
         
-        # Buscar trigger node webhook
-        trigger_node = WorkflowNode.query.filter(
-            WorkflowNode.workflow_id == workflow.id,
-            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade) - usar TRIGGER_NODE_TYPES se necessário
-        ).first()
-        
+        # Buscar trigger node webhook do JSONB
+        nodes = normalize_nodes_from_jsonb(workflow.nodes or [], workflow.edges or [])
+        trigger_node = None
+        for node in nodes:
+            node_type = node.get('node_type')
+            if node_type in ['webhook', 'trigger']:
+                trigger_node = node
+                break
+
         if not trigger_node:
             return jsonify({'error': 'Trigger node não encontrado'}), 404
-        
-        config = trigger_node.config or {}
-        # Verificar se é webhook trigger de múltiplas formas
+
+        config = trigger_node.get('config', {})
+        webhook_token = config.get('webhook_token')
+
+        # Verificar se é webhook trigger
         is_webhook_trigger = (
-            trigger_node.node_type == 'webhook' or
+            trigger_node.get('node_type') == 'webhook' or
             config.get('trigger_type') == 'webhook' or
             config.get('source_object_type') == 'webhook' or
-            trigger_node.webhook_token is not None
+            webhook_token is not None
         )
-        
+
         if not is_webhook_trigger:
             return jsonify({'error': 'Este workflow não usa webhook trigger'}), 400
-        
-        if not trigger_node.webhook_token:
+
+        if not webhook_token:
             return jsonify({'error': 'Webhook token não configurado'}), 400
-        
+
         # Obter URL base da API
         from flask import current_app
         api_base_url = current_app.config.get('API_BASE_URL', request.url_root.rstrip('/'))
-        
-        webhook_url = f"{api_base_url}/api/v1/webhooks/{workflow_id}/{trigger_node.webhook_token}"
+
+        webhook_url = f"{api_base_url}/api/v1/webhooks/{workflow_id}/{webhook_token}"
         
         # Criar payload de teste
         test_payload = request.get_json() or {
@@ -299,31 +311,49 @@ def regenerate_webhook_token(workflow_id):
             organization_id=g.organization_id
         ).first_or_404()
         
-        # Buscar trigger node webhook
-        trigger_node = WorkflowNode.query.filter(
-            WorkflowNode.workflow_id == workflow.id,
-            WorkflowNode.node_type.in_(['webhook', 'trigger'])  # webhook ou trigger (compatibilidade) - usar TRIGGER_NODE_TYPES se necessário
-        ).first()
-        
+        # Buscar trigger node webhook do JSONB (raw nodes array)
+        trigger_node = None
+        trigger_node_index = None
+        for idx, node in enumerate(workflow.nodes or []):
+            node_data = node.get('data', {})
+            node_type = node_data.get('type')
+            if node_type in ['webhook', 'trigger']:
+                trigger_node = node
+                trigger_node_index = idx
+                break
+
         if not trigger_node:
             return jsonify({'error': 'Trigger node não encontrado'}), 404
-        
-        config = trigger_node.config or {}
-        # Verificar se é webhook trigger de múltiplas formas
+
+        trigger_node_data = trigger_node.get('data', {})
+        config = trigger_node_data.get('config', {})
+
+        # Verificar se é webhook trigger
         is_webhook_trigger = (
-            trigger_node.node_type == 'webhook' or
+            trigger_node_data.get('type') == 'webhook' or
             config.get('trigger_type') == 'webhook' or
             config.get('source_object_type') == 'webhook' or
-            trigger_node.webhook_token is not None
+            config.get('webhook_token') is not None
         )
-        
+
         if not is_webhook_trigger:
             return jsonify({'error': 'Este workflow não usa webhook trigger'}), 400
-        
+
         # Gerar novo token
-        new_token = trigger_node.generate_webhook_token()
+        import secrets
+        new_token = secrets.token_urlsafe(32)
+
+        # Atualizar config do node no JSONB
+        if 'config' not in trigger_node_data:
+            trigger_node_data['config'] = {}
+        trigger_node_data['config']['webhook_token'] = new_token
+
+        # Salvar de volta no workflow (JSONB é mutable)
+        workflow.nodes[trigger_node_index] = trigger_node
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(workflow, 'nodes')  # Sinalizar mudança no JSONB
         db.session.commit()
-        
+
         # Obter URL base da API
         from flask import current_app
         api_base_url = current_app.config.get('API_BASE_URL', request.url_root.rstrip('/'))

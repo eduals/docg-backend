@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 hubspot_workflow_bp = Blueprint('hubspot_workflow', __name__, url_prefix='/api/v1/hubspot/workflow-action')
 
-
 @hubspot_workflow_bp.route('', methods=['POST'])
 def execute_workflow_action():
     """
@@ -69,7 +68,7 @@ def execute_workflow_action():
     
     try:
         # Importar serviços necessários
-        from app.models import Workflow, WorkflowNode, GeneratedDocument
+        from app.models import Workflow, GeneratedDocument
         from app.services.workflow_executor import WorkflowExecutor
         
         # Buscar workflow no banco
@@ -206,7 +205,6 @@ def execute_workflow_action():
                 'error_message': str(e)
             }
         })
-
 
 @hubspot_workflow_bp.route('/workflows-options', methods=['GET'])
 def get_workflows_options():

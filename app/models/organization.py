@@ -160,12 +160,18 @@ class User(db.Model):
     __tablename__ = 'users'
     
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organization_id = db.Column(UUID(as_uuid=True), db.ForeignKey('organizations.id'), nullable=False)
+    organization_id = db.Column(UUID(as_uuid=True), db.ForeignKey('organizations.id'), nullable=True)
     email = db.Column(db.String(255), nullable=False)
     name = db.Column(db.String(255))
     role = db.Column(db.String(50), default='user')  # admin, user
     hubspot_user_id = db.Column(db.String(100))
     google_user_id = db.Column(db.String(100))
+    
+    # Better Auth fields
+    email_verified = db.Column(db.Boolean, default=False)
+    is_anonymous = db.Column(db.Boolean, default=False)
+    image = db.Column(db.Text, nullable=True)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
