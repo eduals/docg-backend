@@ -23,9 +23,10 @@ def create_app(config_class=Config):
         allowed_origins.extend([origin.strip() for origin in env_origins.split(',')])
     
     CORS(app,
-         resources={r"/api/*": {"origins": allowed_origins}},
+         resources={r"/api/v1/*": {"origins": allowed_origins}},
          supports_credentials=False,  # Não precisa de credentials com Bearer token
          allow_headers=["Content-Type", "Authorization", "X-Organization-ID", "X-User-Email"],
+         expose_headers=["Content-Type", "X-Total-Count", "X-Page-Number"],
          methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     
     # Inicializar banco de dados
@@ -56,7 +57,11 @@ def create_app(config_class=Config):
     
     from app.routes import connections
     app.register_blueprint(connections.connections_bp)
-    
+
+    # HubSpot dynamic data endpoints (para UI fields)
+    from app.apps.hubspot import dynamic_data
+    app.register_blueprint(dynamic_data.hubspot_dynamic_bp)
+
     from app.routes import organizations
     app.register_blueprint(organizations.organizations_bp)
     

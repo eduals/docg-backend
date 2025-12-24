@@ -263,7 +263,24 @@ class WorkflowNode(db.Model):
     )
     
     def to_dict(self, include_config=False):
-        """Converte node para dicionário"""
+        """Converte node para dicionário - FIX: serialize UUID/datetime in JSONB"""
+        from uuid import UUID
+        from datetime import datetime
+
+        def serialize_jsonb(obj):
+            """Convert UUID/datetime to strings for JSON serialization"""
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return {k: serialize_jsonb(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [serialize_jsonb(item) for item in obj]
+            if isinstance(obj, UUID):
+                return str(obj)
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            return obj
+
         result = {
             'id': str(self.id),
             'workflow_id': str(self.workflow_id),
@@ -271,14 +288,14 @@ class WorkflowNode(db.Model):
             'position': self.position,
             'parent_node_id': str(self.parent_node_id) if self.parent_node_id else None,
             'structural_type': self.structural_type or 'single',
-            'branch_conditions': self.branch_conditions,
+            'branch_conditions': serialize_jsonb(self.branch_conditions),
             'status': self.status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
         if include_config:
-            result['config'] = self.config or {}
+            result['config'] = serialize_jsonb(self.config) or {}
 
         return result
 

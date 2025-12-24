@@ -111,6 +111,77 @@ def create_connection():
     }), 201
 
 
+@connections_bp.route('/test', methods=['POST'])
+@require_auth
+@require_org
+def test_connection_before_save():
+    """
+    Testa credenciais antes de salvar uma nova conexão.
+
+    Body:
+    {
+        "app_type": "hubspot" | "clicksign" | etc,
+        "config": {
+            "api_key": "...",
+            "access_token": "...",
+            // outros campos necessários
+        }
+    }
+
+    Response:
+    {
+        "success": true,
+        "message": "Connection test successful"
+    }
+    """
+    data = request.get_json()
+
+    app_type = data.get('app_type')
+    config = data.get('config', {})
+
+    if not app_type:
+        return jsonify({
+            'success': False,
+            'error': 'app_type é obrigatório'
+        }), 400
+
+    if not config or not any(config.values()):
+        return jsonify({
+            'success': False,
+            'error': 'No credentials provided'
+        }), 400
+
+    try:
+        # Tentar importar e testar o app específico
+        from app.apps import get_app
+
+        app = get_app(app_type)
+
+        if not app:
+            return jsonify({
+                'success': False,
+                'error': f'App type {app_type} not found'
+            }), 404
+
+        # Verificar se o app tem método test_connection
+        if hasattr(app, 'test_connection'):
+            result = app.test_connection(config)
+            return jsonify(result)
+
+        # Default: validar que config não está vazio
+        return jsonify({
+            'success': True,
+            'message': f'Connection test for {app_type} not implemented. Config validated.'
+        })
+
+    except Exception as e:
+        logger.error(f"Erro ao testar conexão: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @connections_bp.route('/<connection_id>', methods=['PUT'])
 @require_auth
 @require_org
