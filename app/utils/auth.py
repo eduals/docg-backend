@@ -4,6 +4,116 @@ from app.config import Config
 from app.models import User, Organization
 from app.database import db
 import uuid
+import jwt
+from datetime import datetime, timedelta
+
+
+def generate_jwt_token(payload, expires_in_days=30):
+    """
+    Generate JWT token for ActivePieces authentication.
+
+    Args:
+        payload: Dictionary with user data (userId, email, platformId, projectId, platformRole)
+        expires_in_days: Token expiration time in days (default: 30)
+
+    Returns:
+        JWT token string
+    """
+    # Add expiration
+    token_payload = payload.copy()
+    token_payload['exp'] = datetime.utcnow() + timedelta(days=expires_in_days)
+    token_payload['iat'] = datetime.utcnow()
+
+    # Use SECRET_KEY from config, fallback to BACKEND_API_TOKEN
+    secret_key = getattr(Config, 'SECRET_KEY', Config.BACKEND_API_TOKEN)
+
+    # Generate JWT
+    token = jwt.encode(token_payload, secret_key, algorithm='HS256')
+
+    return token
+
+
+def decode_jwt_token(token):
+    """
+    Decode and validate JWT token.
+
+    Args:
+        token: JWT token string
+
+    Returns:
+        Dictionary with token payload if valid, None if invalid
+    """
+    try:
+        secret_key = getattr(Config, 'SECRET_KEY', Config.BACKEND_API_TOKEN)
+        payload = jwt.decode(token, secret_key, algorithms=['HS256'])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+def require_jwt_auth(f):
+    """
+    Decorator to require JWT authentication for ActivePieces endpoints.
+    Validates JWT token and loads user context into g.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Get Authorization header
+        auth_header = request.headers.get('Authorization')
+
+        if not auth_header:
+            return jsonify({
+                'error': 'Authorization header missing',
+                'code': 'AUTHORIZATION_REQUIRED'
+            }), 401
+
+        try:
+            # Format: "Bearer {token}"
+            token_type, token = auth_header.split(' ', 1)
+
+            if token_type.lower() != 'bearer':
+                return jsonify({
+                    'error': 'Invalid authorization type',
+                    'code': 'INVALID_BEARER_TOKEN'
+                }), 401
+
+            # Decode JWT
+            payload = decode_jwt_token(token)
+
+            if not payload:
+                return jsonify({
+                    'error': 'Invalid or expired token',
+                    'code': 'INVALID_BEARER_TOKEN'
+                }), 401
+
+            # Store in context
+            g.token = token
+            g.user_id = payload.get('userId')
+            g.user_email = payload.get('email')
+            g.platform_id = payload.get('platformId')
+            g.project_id = payload.get('projectId')
+            g.platform_role = payload.get('platformRole')
+
+            # Load user from database
+            if g.user_id:
+                user = User.query.filter_by(id=g.user_id).first()
+                if user:
+                    g.user = user
+                    if user.organization_id:
+                        g.organization_id = str(user.organization_id)
+
+        except ValueError:
+            return jsonify({
+                'error': 'Invalid authorization header format',
+                'code': 'INVALID_BEARER_TOKEN'
+            }), 401
+
+        return f(*args, **kwargs)
+
+    return decorated_function
+
 
 def require_auth(f):
     """Decorator para exigir autenticação Bearer token

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bem-vindo ao Pipehub</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #4F46E5;
+            margin: 0;
+            font-size: 32px;
+        }
+        .greeting {
+            font-size: 18px;
+            color: #111827;
+            margin: 20px 0;
+        }
+        .message {
+            color: #666;
+            font-size: 16px;
+            margin: 20px 0;
+        }
+        .cta-button {
+            display: inline-block;
+            background-color: #4F46E5;
+            color: #ffffff;
+            text-decoration: none;
+            padding: 14px 28px;
+            border-radius: 6px;
+            margin: 30px 0;
+            font-weight: 600;
+            text-align: center;
+        }
+        .features {
+            background-color: #F9FAFB;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 30px 0;
+        }
+        .features h3 {
+            color: #4F46E5;
+            margin-top: 0;
+        }
+        .features ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .features li {
+            margin: 10px 0;
+            color: #666;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #E5E7EB;
+            color: #9CA3AF;
+            font-size: 14px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎉 Bem-vindo ao Pipehub!</h1>
+        </div>
+
+        <p class="greeting">Olá {{ first_name }},</p>
+
+        <p class="message">
+            Estamos muito felizes em ter você conosco! Sua conta foi criada com sucesso
+            e você já pode começar a automatizar seus workflows.
+        </p>
+
+        <div style="text-align: center;">
+            <a href="{{ app_url }}" class="cta-button">Acessar Plataforma</a>
+        </div>
+
+        <div class="features">
+            <h3>O que você pode fazer:</h3>
+            <ul>
+                <li>✨ Criar workflows visuais de automação</li>
+                <li>🔗 Integrar com centenas de aplicativos</li>
+                <li>📄 Gerar documentos automaticamente</li>
+                <li>📧 Enviar emails e notificações</li>
+                <li>🔄 Sincronizar dados entre sistemas</li>
+            </ul>
+        </div>
+
+        <p class="message">
+            Se você tiver alguma dúvida ou precisar de ajuda, nossa equipe de suporte
+            está sempre disponível para ajudá-lo.
+        </p>
+
+        <p class="message">
+            Boas vindas à bordo! 🚀
+        </p>
+
+        <div class="footer">
+            <p>Precisa de ajuda? <a href="mailto:contato@pipehub.co">contato@pipehub.co</a></p>
+            <p>&copy; {{ year }} Pipehub. Todos os direitos reservados.</p>
+        </div>
+    </div>
+</body>
+</html>

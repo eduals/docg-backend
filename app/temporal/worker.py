@@ -19,7 +19,9 @@ from temporalio.worker import Worker
 
 from .config import get_config
 from .workflows import DocGWorkflow
+from .workflows.flow_workflow import FlowWorkflow
 from .activities import ALL_ACTIVITIES
+from .activities import flow_activities
 
 # Configurar logging
 logging.basicConfig(
@@ -59,11 +61,11 @@ async def run_worker(app=None):
     async with Worker(
         client,
         task_queue=config.task_queue,
-        workflows=[DocGWorkflow],
+        workflows=[DocGWorkflow, FlowWorkflow],
         activities=ALL_ACTIVITIES,
     ):
         logger.info(f"Worker iniciado na task queue: {config.task_queue}")
-        logger.info(f"Workflows registrados: DocGWorkflow")
+        logger.info(f"Workflows registrados: DocGWorkflow, FlowWorkflow")
         logger.info(f"Activities registradas: {len(ALL_ACTIVITIES)}")
         
         # Manter worker rodando

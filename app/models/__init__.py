@@ -21,6 +21,36 @@ from .user_settings import (
     GlobalFieldMapping
 )
 
+# Activepieces-style models
+from .platform import Platform, Project, Folder
+from .permissions import (
+    ProjectRole,
+    ProjectMember,
+    UserInvitation,
+    PlatformRole,
+    DefaultProjectRole,
+    RoleType,
+    Permission,
+    ROLE_PERMISSIONS
+)
+from .flow import (
+    Flow,
+    FlowVersion,
+    FlowRun,
+    FlowRunLog,
+    TriggerEvent,
+    FlowStatus,
+    FlowVersionState,
+    FlowRunStatus,
+    TriggerEventStatus
+)
+from .app_connection import (
+    AppConnection,
+    ConnectionKey,
+    AppConnectionType,
+    AppConnectionStatus
+)
+
 # Importar models legados DEPOIS (para evitar importação circular)
 # Usar importação lazy para evitar problemas
 def _import_legacy():
@@ -92,6 +122,31 @@ __all__ = [
     'UserTwoFactorAuth',
     'ApiKey',
     'GlobalFieldMapping',
+    # Activepieces-style models
+    'Platform',
+    'Project',
+    'Folder',
+    'ProjectRole',
+    'ProjectMember',
+    'UserInvitation',
+    'PlatformRole',
+    'DefaultProjectRole',
+    'RoleType',
+    'Permission',
+    'ROLE_PERMISSIONS',
+    'Flow',
+    'FlowVersion',
+    'FlowRun',
+    'FlowRunLog',
+    'TriggerEvent',
+    'FlowStatus',
+    'FlowVersionState',
+    'FlowRunStatus',
+    'TriggerEventStatus',
+    'AppConnection',
+    'ConnectionKey',
+    'AppConnectionType',
+    'AppConnectionStatus',
     # Legacy models
     'FieldMapping',
     'EnvelopeRelation',

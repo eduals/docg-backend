@@ -158,23 +158,43 @@ class Organization(db.Model):
 
 class User(db.Model):
     __tablename__ = 'users'
-    
+
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = db.Column(UUID(as_uuid=True), db.ForeignKey('organizations.id'), nullable=True)
     email = db.Column(db.String(255), nullable=False)
-    name = db.Column(db.String(255))
+    name = db.Column(db.String(255))  # Legacy field, use first_name + last_name
     role = db.Column(db.String(50), default='user')  # admin, user
     hubspot_user_id = db.Column(db.String(100))
     google_user_id = db.Column(db.String(100))
-    
+
+    # ActivePieces Authentication fields
+    first_name = db.Column(db.String(100))
+    last_name = db.Column(db.String(100))
+    password_hash = db.Column(db.String(255))  # For local auth
+    verified = db.Column(db.Boolean, default=False)  # Email verified
+    track_events = db.Column(db.Boolean, default=True)
+    news_letter = db.Column(db.Boolean, default=False)
+
     # Better Auth fields
-    email_verified = db.Column(db.Boolean, default=False)
+    email_verified = db.Column(db.Boolean, default=False)  # Deprecated, use 'verified'
     is_anonymous = db.Column(db.Boolean, default=False)
     image = db.Column(db.Text, nullable=True)
 
+    # Platform/Project system (Activepieces-style)
+    platform_id = db.Column(UUID(as_uuid=True), db.ForeignKey('platform.id', ondelete='SET NULL'))
+    platform_role = db.Column(db.String(50))  # ADMIN, MEMBER, OPERATOR
+    status = db.Column(db.String(50), default='ACTIVE')  # ACTIVE, INACTIVE
+    identity_id = db.Column(db.String(255), unique=True)  # For SSO/Auth providers
+    external_id = db.Column(db.String(255))  # External system ID
+    last_active_date = db.Column(db.DateTime)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
+    # Relationships
+    platform = db.relationship('Platform', back_populates='users', foreign_keys=[platform_id])
+    project_memberships = db.relationship('ProjectMember', back_populates='user', cascade='all, delete-orphan')
+
     __table_args__ = (
         db.UniqueConstraint('organization_id', 'email', name='unique_user_org_email'),
     )
@@ -188,18 +208,43 @@ class User(db.Model):
     def can_create_template(self):
         return self.role == 'admin'
     
-    def to_dict(self):
-        return {
-            'id': str(self.id),
-            'organization_id': str(self.organization_id),
-            'email': self.email,
-            'name': self.name,
-            'role': self.role,
-            'hubspot_user_id': self.hubspot_user_id,
-            'google_user_id': self.google_user_id,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
-        }
+    def to_dict(self, include_activepieces=True):
+        """
+        Return user data dict.
+
+        Args:
+            include_activepieces: If True, returns ActivePieces-compatible format
+        """
+        if include_activepieces:
+            # ActivePieces format
+            return {
+                'id': str(self.id),
+                'email': self.email,
+                'firstName': self.first_name or self.name or '',
+                'lastName': self.last_name or '',
+                'verified': self.verified or self.email_verified or False,
+                'platformRole': self.platform_role or 'MEMBER',
+                'platformId': str(self.platform_id) if self.platform_id else None,
+                'status': self.status or 'ACTIVE',
+                'externalId': self.external_id,
+                'trackEvents': self.track_events if self.track_events is not None else True,
+                'newsLetter': self.news_letter if self.news_letter is not None else False,
+                'created': self.created_at.isoformat() if self.created_at else None,
+                'updated': self.updated_at.isoformat() if self.updated_at else None,
+            }
+        else:
+            # Legacy format
+            return {
+                'id': str(self.id),
+                'organization_id': str(self.organization_id) if self.organization_id else None,
+                'email': self.email,
+                'name': self.name,
+                'role': self.role,
+                'hubspot_user_id': self.hubspot_user_id,
+                'google_user_id': self.google_user_id,
+                'created_at': self.created_at.isoformat() if self.created_at else None,
+                'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            }
 
 
 class OrganizationFeature(db.Model):

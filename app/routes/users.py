@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, g
 from app.database import db
 from app.models import User, UserPreference, UserNotificationPreference
-from app.utils.auth import require_auth, require_org, require_admin
+from app.utils.auth import require_auth, require_org, require_admin, require_jwt_auth
 import logging
 
 logger = logging.getLogger(__name__)
@@ -44,16 +44,23 @@ def get_current_user():
 
 
 @users_bp.route('/<user_id>', methods=['GET'])
-@require_auth
-@require_org
+@require_jwt_auth
 def get_user(user_id):
-    """Retorna detalhes de um usuário"""
-    user = User.query.filter_by(
-        id=user_id,
-        organization_id=g.organization_id
-    ).first_or_404()
-    
-    return jsonify(user.to_dict())
+    """
+    Get user details by ID.
+    Returns user in ActivePieces-compatible format.
+    """
+    # Find user by ID
+    user = User.query.filter_by(id=user_id).first()
+
+    if not user:
+        return jsonify({
+            'error': 'User not found',
+            'code': 'ENTITY_NOT_FOUND'
+        }), 404
+
+    # Return ActivePieces format
+    return jsonify(user.to_dict(include_activepieces=True)), 200
 
 
 @users_bp.route('', methods=['POST'])
@@ -351,11 +358,53 @@ def update_user_notification_preferences():
         preference.email_workflow_executed = data['email_workflow_executed']
     if 'email_workflow_failed' in data:
         preference.email_workflow_failed = data['email_workflow_failed']
-    
+
     db.session.commit()
-    
+
     return jsonify({
         'success': True,
         'preferences': preference.to_dict()
     })
+
+
+@users_bp.route('/projects', methods=['GET'])
+@require_jwt_auth
+def get_user_projects():
+    """
+    Get all projects the current user has access to.
+    ActivePieces-compatible endpoint.
+
+    Returns:
+        List of projects with membership info
+    """
+    from app.models.platform import Project, ProjectMember
+
+    user_id = g.user_id
+
+    if not user_id:
+        return jsonify({
+            'error': 'User not authenticated',
+            'code': 'AUTHORIZATION_REQUIRED'
+        }), 401
+
+    # Get all project memberships for this user
+    memberships = ProjectMember.query.filter_by(user_id=user_id).all()
+
+    projects = []
+    for membership in memberships:
+        project = Project.query.filter_by(id=membership.project_id).first()
+        if project:
+            project_data = {
+                'id': str(project.id),
+                'displayName': project.display_name,
+                'platformId': str(project.platform_id),
+                'role': membership.role,
+                'created': project.created_at.isoformat() if project.created_at else None,
+                'updated': project.updated_at.isoformat() if project.updated_at else None,
+            }
+            projects.append(project_data)
+
+    return jsonify({
+        'data': projects
+    }), 200
 

@@ -4,6 +4,7 @@ from flask_migrate import Migrate
 import os
 from app.config import Config
 from app.database import db, init_db
+from app.utils.rate_limit import limiter
 
 def create_app(config_class=Config):
     app = Flask(__name__)
@@ -14,6 +15,7 @@ def create_app(config_class=Config):
     allowed_origins = [
         'http://localhost:5173',  # Vite dev server
         'http://localhost:3000',  # Alternativa
+        'http://localhost:4200',  # ActivePieces UI dev server
         'https://docg.pipehub.co',  # Produção
     ]
     
@@ -31,10 +33,13 @@ def create_app(config_class=Config):
     
     # Inicializar banco de dados
     db.init_app(app)
-    
+
     # Inicializar Flask-Migrate
     migrate = Migrate(app, db)
-    
+
+    # Inicializar Rate Limiter
+    limiter.init_app(app)
+
     init_db(app)
     
     # Registrar rotas novas (DocGen)
@@ -77,10 +82,22 @@ def create_app(config_class=Config):
     
     from app.routes import users
     app.register_blueprint(users.users_bp)
-    
+
     from app.routes import features
     app.register_blueprint(features.features_bp)
-    
+
+    # Flags endpoint (ActivePieces UI compatibility)
+    from app.routes import flags
+    app.register_blueprint(flags.bp)
+
+    # Authentication endpoint (ActivePieces UI compatibility)
+    from app.routes.authentication import auth_bp
+    app.register_blueprint(auth_bp)
+
+    # Two-Factor Authentication endpoints
+    from app.routes.two_factor import two_factor_bp
+    app.register_blueprint(two_factor_bp)
+
     # Health check endpoint
     from app.routes import health
     app.register_blueprint(health.bp)
@@ -169,6 +186,65 @@ def create_app(config_class=Config):
     # SSE (Server-Sent Events) para real-time
     from app.routes import sse
     app.register_blueprint(sse.sse_bp)
+
+    # ===== Activepieces-style Flow System =====
+
+    # Initialize pieces (must be done before routes)
+    from app.pieces import init_pieces
+    init_pieces()
+
+    # Platforms (tenants)
+    from app.routes import platforms
+    app.register_blueprint(platforms.platforms_bp)
+
+    # Projects
+    from app.routes import projects
+    app.register_blueprint(projects.projects_bp)
+
+    # Folders
+    from app.routes import folders
+    app.register_blueprint(folders.folders_bp)
+
+    # Flows (visual workflows)
+    from app.routes import flows
+    app.register_blueprint(flows.flows_bp)
+
+    # Flow Versions
+    from app.routes import flow_versions
+    app.register_blueprint(flow_versions.flow_versions_bp)
+
+    # Flow Runs (executions)
+    from app.routes import flow_runs
+    app.register_blueprint(flow_runs.flow_runs_bp)
+
+    # Pieces (apps metadata)
+    from app.routes import pieces
+    app.register_blueprint(pieces.pieces_bp)
+
+    # App Connections (OAuth credentials)
+    from app.routes import app_connections
+    app.register_blueprint(app_connections.app_connections_bp)
+
+    # Connection Keys (global OAuth app credentials)
+    from app.routes import connection_keys
+    app.register_blueprint(connection_keys.connection_keys_bp)
+
+    # Project Members
+    from app.routes import project_members
+    app.register_blueprint(project_members.project_members_bp)
+    app.register_blueprint(project_members.project_members_role_bp)
+
+    # User Invitations
+    from app.routes import invitations
+    app.register_blueprint(invitations.invitations_bp)
+
+    # Trigger Events / Webhooks
+    from app.routes import trigger_events
+    app.register_blueprint(trigger_events.trigger_events_bp)
+
+    # OAuth Callbacks
+    from app.routes import oauth_callbacks
+    app.register_blueprint(oauth_callbacks.oauth_callbacks_bp)
 
     return app
 
